@@ -1,14 +1,10 @@
-// server/index.ts
-import express from "express";
-import { ParseServer } from "parse-server";
-import { config } from "./config.js";
-
-// ⛔️ Fix TypeScript complaining about `new ParseServer(...)`
-const ParseServerClass: any = ParseServer as any;
+const express = require("express");
+const { ParseServer } = require("parse-server");
+const { config } = require("./config");
 
 const app = express();
 
-const parseServer = new ParseServerClass({
+const parseServer = new ParseServer({
   databaseURI: config.databaseURI,
   appId: config.appId,
   masterKey: config.masterKey,
