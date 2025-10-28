@@ -1,5 +1,5 @@
 export const config = {
-  databaseURI: "postgresql://postgres:Reddy_8123859117@db.qtdfenoxtwwlaoqbsqrb.supabase.co:5432/postgres",
+  databaseURI: "mongodb+srv://admin:Reddy_117@nexi-cluster.l9phoa7.mongodb.net/?appName=nexi-cluster",
   appId: "myAppId",
   masterKey: "myMasterKey",
   serverURL: "https://nexi-server.onrender.com/parse",
