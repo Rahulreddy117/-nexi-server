@@ -13,7 +13,9 @@ app.use(cors({
 
 // ✅ Create Parse Server instance (removed cloud option to avoid missing file error)
 const parseServer = new ParseServer({
-  databaseURI: config.databaseURI,              // MongoDB URI
+  databaseURI: config.databaseURI,  
+  databaseAdapter: "parse-server-pg-adapter",  // important line
+            // MongoDB URI
   appId: config.appId,                          // Your app ID
   masterKey: config.masterKey,                  // Your master key
   serverURL: config.serverURL,                  // Your Render URL (with /parse)
