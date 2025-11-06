@@ -16,7 +16,8 @@ const parseServer = new ParseServer({
   databaseURI: config.databaseURI,              // MongoDB URI
   appId: config.appId,                          // Your app ID
   masterKey: config.masterKey,                  // Your master key
-  serverURL: config.serverURL,                  // Your Render URL (with /parse)
+  serverURL: config.serverURL,   
+  cloud: config.cloud,                // Your Render URL (with /parse)
   // cloud: config.cloud,                       // Commented out: Missing cloud/main.js causes crash
   allowClientClassCreation: config.allowClientClassCreation,
   maintenanceKey: config.maintenanceKey,
