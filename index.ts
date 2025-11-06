@@ -17,7 +17,7 @@ const parseServer = new ParseServer({
   appId: config.appId,                          // Your app ID
   masterKey: config.masterKey,                  // Your master key
   serverURL: config.serverURL,   
-  cloud: config.cloud,                // Your Render URL (with /parse)
+      // Your Render URL (with /parse)
   // cloud: config.cloud,                       // Commented out: Missing cloud/main.js causes crash
   allowClientClassCreation: config.allowClientClassCreation,
   maintenanceKey: config.maintenanceKey,
