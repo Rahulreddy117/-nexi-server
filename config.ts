@@ -3,7 +3,7 @@ export const config = {
   appId: "myAppId",
   masterKey: "myMasterKey",
   serverURL: "https://nexi-server.onrender.com/parse",
-  cloud: "./cloud/main.js",
+
   allowClientClassCreation: true,
   maintenanceKey: "default-maintenance-key",
 };
