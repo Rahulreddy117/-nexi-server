@@ -23,9 +23,13 @@ const parseServer = new ParseServer({
 });
 
 // AUTO-CREATE Message CLASS
+// AUTO-CREATE Message CLASS (CLEAN VERSION)
 (async () => {
   try {
     const schema = new Parse.Schema("Message");
+    await schema.save(); // Try create
+    console.log("Message class created");
+
     schema.setCLP({
       get: { requiresAuthentication: true },
       find: { requiresAuthentication: true },
@@ -34,18 +38,13 @@ const parseServer = new ParseServer({
       delete: { requiresAuthentication: true },
       addField: { requiresAuthentication: true },
     });
-    await schema
-      .addString("senderId")
-      .addString("receiverId")
-      .addString("text")
-      .addDate("expiresAt");
-    await schema.save();
-    console.log("Message class ensured");
+    await schema.update();
+    console.log("Message CLP set");
   } catch (err: any) {
-    if (err.code !== 100) {
-      console.error("Schema error:", err);
+    if (err.code === 103) {
+      console.log("Message class already exists (great!)");
     } else {
-      console.log("Message class already exists");
+      console.error("Schema error:", err);
     }
   }
 })();
