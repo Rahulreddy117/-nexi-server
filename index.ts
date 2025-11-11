@@ -147,7 +147,14 @@ io.on("connection", (socket: Socket) => {
         if (receiverSocketId) {
           io.to(receiverSocketId).emit("newMessage", msgPayload);
           io.to(receiverSocketId).emit("refreshInbox");   // NEW
+          
         }
+
+        const senderSocketId = onlineUsers.get(data.senderId);
+if (senderSocketId) {
+  io.to(senderSocketId).emit('messageSent', msgPayload);
+  io.to(senderSocketId).emit('refreshInbox'); // Refresh sender inbox
+}
 
         // 6. Confirm to sender
         socket.emit("messageSent", msgPayload);
