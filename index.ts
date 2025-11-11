@@ -30,13 +30,15 @@ const parseServer = new ParseServer({
 
     // Set CLP first
     schema.setCLP({
+
+      
       get: { requiresAuthentication: true },
-      find: { requiresAuthentication: true },
+      find: { "*": true },  // this for removing sesson token      
       create: { requiresAuthentication: true },
       update: { requiresAuthentication: true },
       delete: { requiresAuthentication: true },
       addField: { requiresAuthentication: true },
-    });
+});
 
     // Define fields
     await schema
