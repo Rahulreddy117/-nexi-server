@@ -1,0 +1,117 @@
+{
+    "name": "@types/parse",
+    "version": "3.0.9",
+    "description": "TypeScript definitions for parse",
+    "homepage": "https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/parse",
+    "license": "MIT",
+    "contributors": [
+        {
+            "name": " Ullisen Media Group",
+            "githubUsername": "ullisenmedia",
+            "url": "https://github.com/ullisenmedia"
+        },
+        {
+            "name": "David Poetzsch-Heffter",
+            "githubUsername": "dpoetzsch",
+            "url": "https://github.com/dpoetzsch"
+        },
+        {
+            "name": "Cedric Kemp",
+            "githubUsername": "jaeggerr",
+            "url": "https://github.com/jaeggerr"
+        },
+        {
+            "name": "Flavio Negrão",
+            "githubUsername": "flavionegrao",
+            "url": "https://github.com/flavionegrao"
+        },
+        {
+            "name": "Wes Grimes",
+            "githubUsername": "wesleygrimes",
+            "url": "https://github.com/wesleygrimes"
+        },
+        {
+            "name": "Otherwise SAS",
+            "githubUsername": "owsas",
+            "url": "https://github.com/owsas"
+        },
+        {
+            "name": "Andrew Goldis",
+            "githubUsername": "agoldis",
+            "url": "https://github.com/agoldis"
+        },
+        {
+            "name": "Alexandre Hétu Rivard",
+            "githubUsername": "AlexandreHetu",
+            "url": "https://github.com/AlexandreHetu"
+        },
+        {
+            "name": "Diamond Lewis",
+            "githubUsername": "dplewis",
+            "url": "https://github.com/dplewis"
+        },
+        {
+            "name": "Jong Eun Lee",
+            "githubUsername": "yomybaby",
+            "url": "https://github.com/yomybaby"
+        },
+        {
+            "name": "Colin Ulin",
+            "githubUsername": "pocketcolin",
+            "url": "https://github.com/pocketcolin"
+        },
+        {
+            "name": "Robert Helms",
+            "githubUsername": "rdhelms",
+            "url": "https://github.com/rdhelms"
+        },
+        {
+            "name": "Julien Quere",
+            "githubUsername": "jlnquere",
+            "url": "https://github.com/jlnquere"
+        },
+        {
+            "name": "Thibault MOCELLIN",
+            "githubUsername": "tybi",
+            "url": "https://github.com/tybi"
+        },
+        {
+            "name": "Jeff Gu Kang",
+            "githubUsername": "jeffgukang",
+            "url": "https://github.com/jeffgukang"
+        },
+        {
+            "name": "Bui Tan Loc",
+            "githubUsername": "buitanloc",
+            "url": "https://github.com/buitanloc"
+        },
+        {
+            "name": "Jerome De Leon",
+            "githubUsername": "JeromeDeLeon",
+            "url": "https://github.com/JeromeDeLeon"
+        },
+        {
+            "name": "Kent Robin Haugen",
+            "githubUsername": "kentrh",
+            "url": "https://github.com/kentrh"
+        },
+        {
+            "name": "Switt Kongdachalert",
+            "githubUsername": "swittk",
+            "url": "https://github.com/swittk"
+        }
+    ],
+    "main": "",
+    "types": "index.d.ts",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/DefinitelyTyped/DefinitelyTyped.git",
+        "directory": "types/parse"
+    },
+    "scripts": {},
+    "dependencies": {
+        "@types/node": "*"
+    },
+    "typesPublisherContentHash": "ccc7a6de6b5f281f99bc92b98a84ecd5d7cb87f65d0790648063e9dcc22cd79f",
+    "typeScriptVersion": "4.5"
+}

@@ -1,0 +1,16 @@
+{"level":"warn","message":"DeprecationWarning: The Parse Server option 'encodeParseObjectInCloudFunction' default will change to 'true' in a future version.","timestamp":"2025-11-11T10:15:36.792Z"}
+{"level":"warn","message":"DeprecationWarning: PublicAPIRouter is deprecated and will be removed in a future version. pages.enableRouter","timestamp":"2025-11-11T10:15:38.535Z"}
+{"level":"warn","message":"DeprecationWarning: The Parse Server option 'encodeParseObjectInCloudFunction' default will change to 'true' in a future version.","timestamp":"2025-11-11T10:21:38.161Z"}
+{"level":"warn","message":"DeprecationWarning: PublicAPIRouter is deprecated and will be removed in a future version. pages.enableRouter","timestamp":"2025-11-11T10:21:39.578Z"}
+{"level":"warn","message":"DeprecationWarning: The Parse Server option 'encodeParseObjectInCloudFunction' default will change to 'true' in a future version.","timestamp":"2025-11-11T10:29:11.229Z"}
+{"level":"warn","message":"DeprecationWarning: PublicAPIRouter is deprecated and will be removed in a future version. pages.enableRouter","timestamp":"2025-11-11T10:29:12.690Z"}
+{"level":"warn","message":"DeprecationWarning: The Parse Server option 'encodeParseObjectInCloudFunction' default will change to 'true' in a future version.","timestamp":"2025-11-11T10:33:35.949Z"}
+{"level":"warn","message":"DeprecationWarning: PublicAPIRouter is deprecated and will be removed in a future version. pages.enableRouter","timestamp":"2025-11-11T10:33:38.281Z"}
+{"level":"warn","message":"DeprecationWarning: The Parse Server option 'encodeParseObjectInCloudFunction' default will change to 'true' in a future version.","timestamp":"2025-11-11T10:33:58.113Z"}
+{"level":"warn","message":"DeprecationWarning: PublicAPIRouter is deprecated and will be removed in a future version. pages.enableRouter","timestamp":"2025-11-11T10:34:00.312Z"}
+{"level":"warn","message":"DeprecationWarning: The Parse Server option 'encodeParseObjectInCloudFunction' default will change to 'true' in a future version.","timestamp":"2025-11-11T10:35:04.207Z"}
+{"level":"warn","message":"DeprecationWarning: PublicAPIRouter is deprecated and will be removed in a future version. pages.enableRouter","timestamp":"2025-11-11T10:35:06.331Z"}
+{"level":"warn","message":"DeprecationWarning: The Parse Server option 'encodeParseObjectInCloudFunction' default will change to 'true' in a future version.","timestamp":"2025-11-11T10:35:19.678Z"}
+{"level":"warn","message":"DeprecationWarning: PublicAPIRouter is deprecated and will be removed in a future version. pages.enableRouter","timestamp":"2025-11-11T10:35:21.989Z"}
+{"level":"warn","message":"DeprecationWarning: The Parse Server option 'encodeParseObjectInCloudFunction' default will change to 'true' in a future version.","timestamp":"2025-11-11T10:36:26.972Z"}
+{"level":"warn","message":"DeprecationWarning: PublicAPIRouter is deprecated and will be removed in a future version. pages.enableRouter","timestamp":"2025-11-11T10:36:28.615Z"}
