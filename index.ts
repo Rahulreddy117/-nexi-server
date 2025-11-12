@@ -6,7 +6,7 @@ import http from "http";
 import { Server, Socket } from "socket.io";
 import Parse from "parse/node";
 import { config } from "./config";
-import { MongoClient } from "mongodb"; // ← ADD THIS
+import { MongoClient } from "mongodb";
 
 const app = express();
 const server = http.createServer(app);
@@ -24,12 +24,13 @@ const parseServer = new ParseServer({
 });
 
 // -------------------------------------------------------------------
-// 3. Ensure Message class + CLP + MongoDB Indexes
+// 1. Ensure Message class + CLP + Indexes (NO expiresAt)
 // -------------------------------------------------------------------
 (async () => {
   try {
     const schema = new Parse.Schema("Message");
 
+    // Allow master key to read/write, no session needed
     schema.setCLP({
       get: { requiresAuthentication: true },
       find: { "*": true },
@@ -39,67 +40,50 @@ const parseServer = new ParseServer({
       addField: { requiresAuthentication: true },
     });
 
+    // Only these fields — clean & simple
     await schema
       .addString("senderId")
       .addString("receiverId")
-      .addString("text")
-      .addDate("expiresAt");
+      .addString("text");
 
     await schema.save();
-    console.log("Message class ensured with CLP");
+    console.log("Message class created (no TTL)");
 
-    // -----------------------------------------------------------------
-    // CREATE MONGODB INDEXES (fast $or queries)
-    // -----------------------------------------------------------------
-    const uri = config.databaseURI;
-    const client = new MongoClient(uri);
-
+    // Fast queries with compound indexes
+    const client = new MongoClient(config.databaseURI);
     try {
       await client.connect();
       const db = client.db();
       const collection = db.collection("Message");
 
       await collection.createIndexes([
-        { key: { senderId: 1 }, background: true },
-        { key: { receiverId: 1 }, background: true },
-        { key: { expiresAt: -1 }, background: true, expireAfterSeconds: 0 }, // TTL
-        {
-          key: { senderId: 1, receiverId: 1, createdAt: -1 },
-          background: true,
-        },
-        {
-          key: { receiverId: 1, senderId: 1, createdAt: -1 },
-          background: true,
-        },
+        { key: { senderId: 1, createdAt: -1 }, background: true },
+        { key: { receiverId: 1, createdAt: -1 }, background: true },
       ]);
 
-      console.log("MongoDB indexes created on Message");
-    } catch (idxErr: any) {
-      if (idxErr.codeName === "IndexOptionsConflict" || idxErr.code === 85) {
-        console.log("Indexes already exist with same name but different options – skipping");
-      } else {
-        console.warn("Index creation warning (non-fatal):", idxErr.message);
-      }
+      console.log("Message indexes created (fast $or queries)");
+    } catch (err: any) {
+      console.warn("Index warning (safe to ignore):", err.message);
     } finally {
       await client.close();
     }
   } catch (err: any) {
     if (err.code === 103) {
-      console.log("Message class exists – skipping schema creation");
+      console.log("Message class exists");
     } else {
-      console.error("Schema setup error:", err);
+      console.error("Schema error:", err);
     }
   }
 })();
 
 // -------------------------------------------------------------------
-// 4. Socket.IO
+// 2. Socket.IO — Real-time chat
 // -------------------------------------------------------------------
 const io = new Server(server, {
   cors: { origin: "*", methods: ["GET", "POST"] },
 });
 
-const onlineUsers = new Map<string, string>();
+const onlineUsers = new Map<string, string>(); // auth0Id → socket.id
 
 io.on("connection", (socket: Socket) => {
   console.log("SOCKET CONNECTED:", socket.id);
@@ -110,48 +94,47 @@ io.on("connection", (socket: Socket) => {
     socket.emit("joined", { success: true });
   });
 
-  socket.on(
-    "sendMessage",
-    async (data: { senderId: string; receiverId: string; text: string }) => {
-      try {
-        const receiverQuery = new Parse.Query("UserProfile");
-        receiverQuery.equalTo("auth0Id", data.receiverId);
-        const receiver = await receiverQuery.first({ useMasterKey: true });
+  socket.on("sendMessage", async (data: { senderId: string; receiverId: string; text: string }) => {
+    try {
+      // Verify receiver exists
+      const receiverQuery = new Parse.Query("UserProfile");
+      receiverQuery.equalTo("auth0Id", data.receiverId);
+      const receiver = await receiverQuery.first({ useMasterKey: true });
 
-        if (!receiver) {
-          socket.emit("sendError", { error: "User not found" });
-          return;
-        }
-
-        const Message = Parse.Object.extend("Message");
-        const message = new Message();
-
-        message.set("senderId", data.senderId);
-        message.set("receiverId", receiver.get("auth0Id"));
-        message.set("text", data.text);
-        message.set("expiresAt", new Date(Date.now() + 24 * 60 * 60 * 1000));
-
-        const saved = await message.save(null, { useMasterKey: true });
-
-        const payload = {
-          objectId: saved.id,
-          text: data.text,
-          senderId: data.senderId,
-          receiverId: receiver.get("auth0Id"),
-          createdAt: saved.get("createdAt")!.toISOString(),
-        };
-
-        const receiverSocketId = onlineUsers.get(receiver.get("auth0Id"));
-        if (receiverSocketId) {
-          io.to(receiverSocketId).emit("newMessage", payload);
-        }
-        socket.emit("messageSent", payload);
-      } catch (err: any) {
-        console.error("sendMessage error:", err);
-        socket.emit("sendError", { error: err.message || "Failed" });
+      if (!receiver) {
+        socket.emit("sendError", { error: "User not found" });
+        return;
       }
+
+      // Save message
+      const Message = Parse.Object.extend("Message");
+      const message = new Message();
+
+      message.set("senderId", data.senderId);
+      message.set("receiverId", receiver.get("auth0Id"));
+      message.set("text", data.text);
+
+      const saved = await message.save(null, { useMasterKey: true });
+
+      // Send to both users
+      const payload = {
+        objectId: saved.id,
+        text: data.text,
+        senderId: data.senderId,
+        receiverId: receiver.get("auth0Id"),
+        createdAt: saved.get("createdAt")!.toISOString(),
+      };
+
+      const receiverSocketId = onlineUsers.get(receiver.get("auth0Id"));
+      if (receiverSocketId) {
+        io.to(receiverSocketId).emit("newMessage", payload);
+      }
+      socket.emit("messageSent", payload);
+    } catch (err: any) {
+      console.error("sendMessage error:", err);
+      socket.emit("sendError", { error: err.message || "Failed" });
     }
-  );
+  });
 
   socket.on("disconnect", () => {
     for (const [auth0Id, sid] of onlineUsers.entries()) {
@@ -165,7 +148,7 @@ io.on("connection", (socket: Socket) => {
 });
 
 // -------------------------------------------------------------------
-// 5. Start Server
+// 3. Start server
 // -------------------------------------------------------------------
 (async () => {
   try {
@@ -176,11 +159,11 @@ io.on("connection", (socket: Socket) => {
 
     const PORT = process.env.PORT || 1337;
     server.listen(PORT, () => {
-      console.log(`Server running on http://localhost:${PORT}/parse`);
-      console.log(`Socket.IO ready on ws://localhost:${PORT}`);
+      console.log(`Server: http://localhost:${PORT}/parse`);
+      console.log(`Socket.IO: ws://localhost:${PORT}`);
     });
   } catch (error) {
-    console.error("Server failed to start:", error);
+    console.error("Server failed:", error);
     process.exit(1);
   }
 })();
