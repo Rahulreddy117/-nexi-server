@@ -86,7 +86,7 @@ io.on("connection", (socket: Socket) => {
   socket.on("sendMessage", async (data: { senderId: string; receiverId: string; text: string }) => {
   try {
     // 1. Find receiver by auth0Id
-    const receiverQuery = new Parse.Query("_User");
+    const receiverQuery = new Parse.Query("UserProfile");
     receiverQuery.equalTo("auth0Id", data.receiverId);
     const receiver = await receiverQuery.first({ useMasterKey: true });
 
