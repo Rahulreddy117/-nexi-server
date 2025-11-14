@@ -1,10 +1,10 @@
-// index.ts
 import express from "express";
 import cors from "cors";
 import ParseServer from "parse-server";
 import http from "http";
 import { Server, Socket } from "socket.io";
-import Parse from "parse/node";  // ← IMPORT ONCE HERE
+import Parse from "parse/node";
+import admin from "firebase-admin";
 import { config } from "./config";
 
 const app = express();
@@ -22,114 +22,126 @@ const parseServer = new ParseServer({
   enableInsecureAuthAdapters: false,
 });
 
-// AUTO-CREATE Message CLASS
-// AUTO-CREATE Message CLASS (CLEAN VERSION)
 (async () => {
   try {
     const schema = new Parse.Schema("Message");
-    await schema.save(); // Try create
-    console.log("Message class created");
-
     schema.setCLP({
       get: { requiresAuthentication: true },
-      find: { requiresAuthentication: true },
+      find: { "*": true },
       create: { requiresAuthentication: true },
       update: { requiresAuthentication: true },
       delete: { requiresAuthentication: true },
       addField: { requiresAuthentication: true },
     });
-    await schema.update();
-    console.log("Message CLP set");
+    await schema.addString("senderId").addString("receiverId").addString("text");
+    await schema.save();
+    console.log("Message class ready");
   } catch (err: any) {
-    if (err.code === 103) {
-      console.log("Message class already exists (great!)");
-    } else {
-      console.error("Schema error:", err);
-    }
+    if (err.code !== 103) console.error("Schema error:", err);
   }
 })();
 
-// SOCKET.IO SETUP
+// FCM Admin Init
+if (!admin.apps.length) {
+  admin.initializeApp({
+    credential: admin.credential.cert({
+      projectId: process.env.FIREBASE_PROJECT_ID,
+      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+      privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+    }),
+  });
+}
+
 const io = new Server(server, {
   cors: { origin: "*", methods: ["GET", "POST"] },
 });
 
-const onlineUsers = new Map<string, string>(); // auth0Id → socket.id
+const onlineUsers = new Map<string, string>();
 
 io.on("connection", (socket: Socket) => {
-  console.log("SOCKET CONNECTED:", socket.id);
-
   socket.on("join", (auth0Id: string) => {
     onlineUsers.set(auth0Id, socket.id);
-    console.log(`JOIN: ${auth0Id} → ${socket.id}`);
-    socket.emit("joined", { success: true });
   });
 
-  socket.on(
-    "sendMessage",
-    async (data: { senderId: string; receiverId: string; text: string }) => {
-      try {
-        const Message = Parse.Object.extend("Message");
-        const message = new Message();
+  socket.on("sendMessage", async (data: { senderId: string; receiverId: string; text: string }) => {
+    try {
+      const receiverQuery = new Parse.Query("UserProfile");
+      receiverQuery.equalTo("auth0Id", data.receiverId);
+      const receiver = await receiverQuery.first({ useMasterKey: true });
+      if (!receiver) return socket.emit("sendError", { error: "User not found" });
 
-        message.set("senderId", data.senderId);
-        message.set("receiverId", data.receiverId);
-        message.set("text", data.text);
-        message.set("expiresAt", new Date(Date.now() + 24 * 60 * 60 * 1000));
+      const senderQuery = new Parse.Query("UserProfile");
+      senderQuery.equalTo("auth0Id", data.senderId);
+      const senderProfile = await senderQuery.first({ useMasterKey: true });
 
-        const savedMessage = await message.save(null, { useMasterKey: true });
+      const Message = Parse.Object.extend("Message");
+      const message = new Message();
+      message.set("senderId", data.senderId);
+      message.set("receiverId", data.receiverId);
+      message.set("text", data.text);
+      const saved = await message.save(null, { useMasterKey: true });
 
-        // ← SEND REAL objectId + createdAt
-        const msgPayload = {
-          objectId: savedMessage.id,
-          text: data.text,
-          senderId: data.senderId,
-          createdAt: savedMessage.get("createdAt").toISOString(),
-        };
+      const payload = {
+        objectId: saved.id,
+        text: data.text,
+        senderId: data.senderId,
+        senderName: senderProfile?.get("username") || "User",
+        receiverId: data.receiverId,
+        createdAt: saved.get("createdAt")!.toISOString(),
+      };
 
-        // Deliver to receiver if online
-        const receiverSocketId = onlineUsers.get(data.receiverId);
-        if (receiverSocketId) {
-          io.to(receiverSocketId).emit("newMessage", msgPayload);
-          console.log(`DELIVERED to ${data.receiverId}`);
-        } else {
-          console.log(`${data.receiverId} is OFFLINE`);
-        }
-
-        // Confirm to sender
-        socket.emit("messageSent", msgPayload);
-      } catch (err: any) {
-        console.error("Send error:", err);
-        socket.emit("sendError", { error: err.message || "Failed to send" });
+      // Socket (online)
+      const receiverSocketId = onlineUsers.get(data.receiverId);
+      if (receiverSocketId) {
+        io.to(receiverSocketId).emit("newMessage", payload);
       }
+
+      // FCM (background/killed)
+      const fcmToken = receiver.get("fcmToken");
+      if (fcmToken) {
+        try {
+          await admin.messaging().send({
+            token: fcmToken,
+            notification: {
+              title: senderProfile?.get("username") || "New Message",
+              body: data.text,
+            },
+            data: {
+              receiverId: data.senderId,
+              receiverName: senderProfile?.get("username") || "",
+              receiverPic: senderProfile?.get("profilePicUrl") || "",
+            },
+            android: {
+              priority: "high",
+              notification: { sound: "default", clickAction: "FLUTTER_NOTIFICATION_CLICK" },
+            },
+          });
+        } catch (fcmErr: any) {
+          if (fcmErr.code === 'messaging/registration-token-not-registered') {
+            receiver.unset("fcmToken");
+            await receiver.save(null, { useMasterKey: true });
+          }
+        }
+      }
+
+      socket.emit("messageSent", payload);
+    } catch (err: any) {
+      socket.emit("sendError", { error: err.message });
     }
-  );
+  });
 
   socket.on("disconnect", () => {
-    for (const [auth0Id, sid] of onlineUsers.entries()) {
-      if (sid === socket.id) {
-        onlineUsers.delete(auth0Id);
-        console.log(`DISCONNECTED: ${auth0Id}`);
-        break;
-      }
+    for (const [id, sid] of onlineUsers.entries()) {
+      if (sid === socket.id) onlineUsers.delete(id);
     }
   });
 });
 
-// START SERVER
 (async () => {
-  try {
-    await parseServer.start();
-    console.log("Parse Server started");
-    app.use("/parse", parseServer.app);
-
-    const PORT = process.env.PORT || 1337;
-    server.listen(PORT, () => {
-      console.log(`Server running on http://localhost:${PORT}/parse`);
-      console.log(`Socket.IO ready on ws://localhost:${PORT}`);
-    });
-  } catch (error) {
-    console.error("Server failed to start:", error);
-    process.exit(1);
-  }
+  await parseServer.start();
+  app.use("/parse", parseServer.app);
+  const PORT = process.env.PORT || 1337;
+  server.listen(PORT, () => {
+    console.log(`Server running on ${PORT}`);
+  });
 })();
