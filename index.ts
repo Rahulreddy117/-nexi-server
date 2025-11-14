@@ -6,7 +6,6 @@ import http from "http";
 import { Server, Socket } from "socket.io";
 import Parse from "parse/node";
 import admin from "firebase-admin";
-import { config } from "./config";
 import { MongoClient } from "mongodb";
 
 const app = express();
@@ -15,34 +14,47 @@ const server = http.createServer(app);
 app.use(cors({ origin: "*", credentials: true }));
 
 // -------------------------------------------------------------------
-// 1. Initialize Firebase Admin SDK (once)
+// 1. HARD-CODED CONFIG (NO .env)
+// -------------------------------------------------------------------
+const DATABASE_URI = "mongodb+srv://ranga:yourpassword@cluster0.mongodb.net/nexi?retryWrites=true&w=majority";
+const APP_ID = "myAppId";
+const MASTER_KEY = "myMasterKey";
+const SERVER_URL = "https://nexi-server.onrender.com/parse";
+const MAINTENANCE_KEY = "secret123";
+
+// -------------------------------------------------------------------
+// 2. Initialize Firebase Admin SDK (HARD-CODED SERVICE ACCOUNT)
 // -------------------------------------------------------------------
 if (!admin.apps.length) {
   admin.initializeApp({
     credential: admin.credential.cert({
-      projectId: process.env.FIREBASE_PROJECT_ID!,
-      clientEmail: process.env.FIREBASE_CLIENT_EMAIL!,
-      privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, "\n")!,
+      projectId: "your-firebase-project-id",
+      clientEmail: "firebase-adminsdk-xxxxx@your-project.iam.gserviceaccount.com",
+      privateKey: `-----BEGIN PRIVATE KEY-----
+MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC...
+... (your full private key here)
+-----END PRIVATE KEY-----
+`.replace(/\\n/g, "\n"),
     }),
   });
   console.log("Firebase Admin initialized");
 }
 
 // -------------------------------------------------------------------
-// 2. Parse Server
+// 3. Parse Server
 // -------------------------------------------------------------------
 const parseServer = new ParseServer({
-  databaseURI: config.databaseURI,
-  appId: config.appId,
-  masterKey: config.masterKey,
-  serverURL: config.serverURL,
-  allowClientClassCreation: config.allowClientClassCreation,
-  maintenanceKey: config.maintenanceKey,
+  databaseURI: DATABASE_URI,
+  appId: APP_ID,
+  masterKey: MASTER_KEY,
+  serverURL: SERVER_URL,
+  allowClientClassCreation: false,
+  maintenanceKey: MAINTENANCE_KEY,
   enableInsecureAuthAdapters: false,
 });
 
 // -------------------------------------------------------------------
-// 3. Ensure Message class + Indexes
+// 4. Ensure Message class + Indexes
 // -------------------------------------------------------------------
 (async () => {
   try {
@@ -65,7 +77,7 @@ const parseServer = new ParseServer({
     await schema.save();
     console.log("Message class ready");
 
-    const client = new MongoClient(config.databaseURI);
+    const client = new MongoClient(DATABASE_URI);
     try {
       await client.connect();
       const db = client.db();
@@ -91,7 +103,7 @@ const parseServer = new ParseServer({
 })();
 
 // -------------------------------------------------------------------
-// 4. Socket.IO — Real-time chat
+// 5. Socket.IO — Real-time chat
 // -------------------------------------------------------------------
 const io = new Server(server, {
   cors: { origin: "*", methods: ["GET", "POST"] },
@@ -109,7 +121,7 @@ io.on("connection", (socket: Socket) => {
   });
 
   // -----------------------------------------------------------------
-  // 5. SEND MESSAGE + FCM
+  // 6. SEND MESSAGE + FCM (OFFLINE PUSH)
   // -----------------------------------------------------------------
   socket.on("sendMessage", async (data: { senderId: string; receiverId: string; text: string }) => {
     try {
@@ -149,14 +161,14 @@ io.on("connection", (socket: Socket) => {
         senderPic,
       };
 
-      // 5. Socket.IO (if receiver online)
+      // 5. Socket.IO (if online)
       const receiverSocketId = onlineUsers.get(data.receiverId);
       if (receiverSocketId) {
         io.to(receiverSocketId).emit("newMessage", payload);
         console.log(`Socket delivered to ${data.receiverId}`);
       }
 
-      // 6. FCM (if receiver offline or app closed)
+      // 6. FCM (if offline or app closed)
       const fcmToken = receiver.get("fcmToken");
       if (fcmToken) {
         try {
@@ -201,7 +213,7 @@ io.on("connection", (socket: Socket) => {
   });
 
   // -----------------------------------------------------------------
-  // 6. DISCONNECT
+  // 7. DISCONNECT
   // -----------------------------------------------------------------
   socket.on("disconnect", () => {
     for (const [auth0Id, sid] of onlineUsers.entries()) {
@@ -215,7 +227,7 @@ io.on("connection", (socket: Socket) => {
 });
 
 // -------------------------------------------------------------------
-// 7. Start server
+// 8. Start server
 // -------------------------------------------------------------------
 (async () => {
   try {
@@ -228,7 +240,7 @@ io.on("connection", (socket: Socket) => {
     server.listen(PORT, () => {
       console.log(`Server running on http://localhost:${PORT}/parse`);
       console.log(`Socket.IO ready on ws://localhost:${PORT}`);
-      console.log(`FCM Push + Real-time Chat = WORKING`);
+      console.log(`FCM + Real-time Chat = WORKING`);
     });
   } catch (error) {
     console.error("Server failed:", error);
