@@ -24,12 +24,13 @@ const parseServer = new ParseServer({
 });
 
 // -------------------------------------------------------------------
-// 1. Ensure Message class + Indexes
+// 1. Ensure Message class + CLP + Indexes (NO expiresAt)
 // -------------------------------------------------------------------
 (async () => {
   try {
     const schema = new Parse.Schema("Message");
 
+    // Allow master key to read/write, no session needed
     schema.setCLP({
       get: { requiresAuthentication: true },
       find: { "*": true },
@@ -39,14 +40,16 @@ const parseServer = new ParseServer({
       addField: { requiresAuthentication: true },
     });
 
+    // Only these fields — clean & simple
     await schema
       .addString("senderId")
       .addString("receiverId")
       .addString("text");
 
     await schema.save();
-    console.log("Message class ready");
+    console.log("Message class created (no TTL)");
 
+    // Fast queries with compound indexes
     const client = new MongoClient(config.databaseURI);
     try {
       await client.connect();
@@ -57,15 +60,16 @@ const parseServer = new ParseServer({
         { key: { senderId: 1, createdAt: -1 }, background: true },
         { key: { receiverId: 1, createdAt: -1 }, background: true },
       ]);
-      console.log("Message indexes created");
+
+      console.log("Message indexes created (fast $or queries)");
     } catch (err: any) {
-      console.warn("Index warning (ok):", err.message);
+      console.warn("Index warning (safe to ignore):", err.message);
     } finally {
       await client.close();
     }
   } catch (err: any) {
     if (err.code === 103) {
-      console.log("Message class already exists");
+      console.log("Message class exists");
     } else {
       console.error("Schema error:", err);
     }
@@ -73,7 +77,7 @@ const parseServer = new ParseServer({
 })();
 
 // -------------------------------------------------------------------
-// 2. Socket.IO — Real-time chat with sender name & pic
+// 2. Socket.IO — Real-time chat
 // -------------------------------------------------------------------
 const io = new Server(server, {
   cors: { origin: "*", methods: ["GET", "POST"] },
@@ -92,7 +96,7 @@ io.on("connection", (socket: Socket) => {
 
   socket.on("sendMessage", async (data: { senderId: string; receiverId: string; text: string }) => {
     try {
-      // 1. Get receiver profile
+      // Verify receiver exists
       const receiverQuery = new Parse.Query("UserProfile");
       receiverQuery.equalTo("auth0Id", data.receiverId);
       const receiver = await receiverQuery.first({ useMasterKey: true });
@@ -102,15 +106,7 @@ io.on("connection", (socket: Socket) => {
         return;
       }
 
-      // 2. Get sender profile (for name + pic)
-      const senderQuery = new Parse.Query("UserProfile");
-      senderQuery.equalTo("auth0Id", data.senderId);
-      const sender = await senderQuery.first({ useMasterKey: true });
-
-      const senderName = sender?.get("username") || sender?.get("name") || "Someone";
-      const senderPic = sender?.get("profilePicUrl") || null;
-
-      // 3. Save message
+      // Save message
       const Message = Parse.Object.extend("Message");
       const message = new Message();
 
@@ -120,32 +116,23 @@ io.on("connection", (socket: Socket) => {
 
       const saved = await message.save(null, { useMasterKey: true });
 
-      // 4. Final payload with sender info
+      // Send to both users
       const payload = {
         objectId: saved.id,
         text: data.text,
         senderId: data.senderId,
         receiverId: receiver.get("auth0Id"),
         createdAt: saved.get("createdAt")!.toISOString(),
-        senderName,     // This is the key!
-        senderPic,      // Optional profile pic
       };
 
-      // 5. Send to receiver (if online)
       const receiverSocketId = onlineUsers.get(receiver.get("auth0Id"));
       if (receiverSocketId) {
         io.to(receiverSocketId).emit("newMessage", payload);
-        console.log(`Delivered to receiver: ${receiver.get("auth0Id")}`);
-      } else {
-        console.log(`Receiver offline: ${receiver.get("auth0Id")}`);
       }
-
-      // 6. Confirm to sender
       socket.emit("messageSent", payload);
-
     } catch (err: any) {
       console.error("sendMessage error:", err);
-      socket.emit("sendError", { error: err.message || "Failed to send" });
+      socket.emit("sendError", { error: err.message || "Failed" });
     }
   });
 
@@ -172,9 +159,8 @@ io.on("connection", (socket: Socket) => {
 
     const PORT = process.env.PORT || 1337;
     server.listen(PORT, () => {
-      console.log(`Server running on http://localhost:${PORT}/parse`);
-      console.log(`Socket.IO ready on ws://localhost:${PORT}`);
-      console.log(`Notifications will now show sender name & work when app is closed!`);
+      console.log(`Server: http://localhost:${PORT}/parse`);
+      console.log(`Socket.IO: ws://localhost:${PORT}`);
     });
   } catch (error) {
     console.error("Server failed:", error);
