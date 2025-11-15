@@ -1,4 +1,4 @@
-// index.ts
+// index.ts (Backend) — FULL CODE
 import express from "express";
 import cors from "cors";
 import ParseServer from "parse-server";
@@ -15,7 +15,7 @@ const server = http.createServer(app);
 app.use(cors({ origin: "*", credentials: true }));
 
 // -------------------------------------------------------------------
-// 1. Firebase Admin SDK – HARD-CODED (with \n fix)
+// 1. Firebase Admin SDK
 // -------------------------------------------------------------------
 if (!admin.apps.length) {
   admin.initializeApp({
@@ -69,7 +69,7 @@ const parseServer = new ParseServer({
 });
 
 // -------------------------------------------------------------------
-// 3. Ensure Message class + CLP + Indexes
+// 3. Schema & Indexes
 // -------------------------------------------------------------------
 (async () => {
   try {
@@ -82,55 +82,35 @@ const parseServer = new ParseServer({
       delete: { requiresAuthentication: true },
       addField: { requiresAuthentication: true },
     });
-
     await schema.addString("senderId").addString("receiverId").addString("text");
     await schema.save();
     console.log("Message class ready");
 
     const client = new MongoClient(config.databaseURI);
-    try {
-      await client.connect();
-      const db = client.db();
-      const collection = db.collection("Message");
-
-      await collection.createIndexes([
-        { key: { senderId: 1, createdAt: -1 }, background: true },
-        { key: { receiverId: 1, createdAt: -1 }, background: true },
-      ]);
-      console.log("Message indexes created");
-    } catch (err: any) {
-      console.warn("Index warning (ignore if already exist):", err.message);
-    } finally {
-      await client.close();
-    }
+    await client.connect();
+    const db = client.db();
+    await db.collection("Message").createIndexes([
+      { key: { senderId: 1, createdAt: -1 }, background: true },
+      { key: { receiverId: 1, createdAt: -1 }, background: true },
+    ]);
+    console.log("Indexes created");
+    await client.close();
   } catch (err: any) {
-    if (err.code === 103) {
-      console.log("Message class already exists");
-    } else {
-      console.error("Schema error:", err);
-    }
+    if (err.code !== 103) console.error("Schema error:", err);
   }
 })();
 
 // -------------------------------------------------------------------
-// 4. Socket.IO + Cloud Function + FCM Push
+// 4. Socket.IO + FCM
 // -------------------------------------------------------------------
-const io = new Server(server, {
-  cors: { origin: "*", methods: ["GET", "POST"] },
-});
+const io = new Server(server, { cors: { origin: "*", methods: ["GET", "POST"] } });
+const onlineUsers = new Map<string, string>();
 
-const onlineUsers = new Map<string, string>(); // auth0Id → socket.id
-
-// Cloud Function – Save FCM token
 Parse.Cloud.define("saveFcmToken", async (request) => {
   const { userId, fcmToken } = request.params;
-  if (!userId || !fcmToken) throw "userId and fcmToken required";
-
-  const query = new Parse.Query("UserProfile");
-  query.equalTo("auth0Id", userId);
-  const user = await query.first({ useMasterKey: true });
+  if (!userId || !fcmToken) throw "Missing params";
+  const user = await new Parse.Query("UserProfile").equalTo("auth0Id", userId).first({ useMasterKey: true });
   if (!user) throw "User not found";
-
   user.set("fcmToken", fcmToken);
   await user.save(null, { useMasterKey: true });
   return { success: true };
@@ -141,100 +121,77 @@ io.on("connection", (socket: Socket) => {
 
   socket.on("join", (auth0Id: string) => {
     onlineUsers.set(auth0Id, socket.id);
-    console.log(`JOIN: ${auth0Id} → ${socket.id}`);
+    console.log(`JOIN: ${auth0Id}`);
     socket.emit("joined", { success: true });
   });
 
-  socket.on(
-    "sendMessage",
-    async (data: { senderId: string; receiverId: string; text: string }) => {
-      try {
-        // ---- Receiver ----
-        const receiverQuery = new Parse.Query("UserProfile");
-        receiverQuery.equalTo("auth0Id", data.receiverId);
-        const receiver = await receiverQuery.first({ useMasterKey: true });
-        if (!receiver) {
-          socket.emit("sendError", { error: "User not found" });
-          return;
-        }
+  socket.on("sendMessage", async (data: { senderId: string; receiverId: string; text: string }) => {
+    try {
+      const receiver = await new Parse.Query("UserProfile").equalTo("auth0Id", data.receiverId).first({ useMasterKey: true });
+      if (!receiver) return socket.emit("sendError", { error: "User not found" });
 
-        // ---- Sender info ----
-        const senderQuery = new Parse.Query("UserProfile");
-        senderQuery.equalTo("auth0Id", data.senderId);
-        const sender = await senderQuery.first({ useMasterKey: true });
+      const sender = await new Parse.Query("UserProfile").equalTo("auth0Id", data.senderId).first({ useMasterKey: true });
+      const senderName = sender?.get("username") || "Someone";
+      const senderPic = sender?.get("profilePicUrl") || "";
 
-        const senderName = sender?.get("username") || "Someone";
-        const senderPic = sender?.get("profilePicUrl") || "";
+      const Message = Parse.Object.extend("Message");
+      const message = new Message();
+      message.set("senderId", data.senderId);
+      message.set("receiverId", receiver.get("auth0Id"));
+      message.set("text", data.text);
+      const saved = await message.save(null, { useMasterKey: true });
 
-        // ---- Save message ----
-        const Message = Parse.Object.extend("Message");
-        const message = new Message();
-        message.set("senderId", data.senderId);
-        message.set("receiverId", receiver.get("auth0Id"));
-        message.set("text", data.text);
-        const saved = await message.save(null, { useMasterKey: true });
+      const payload = {
+        objectId: saved.id,
+        text: data.text,
+        senderId: data.senderId,
+        receiverId: receiver.get("auth0Id"),
+        createdAt: saved.get("createdAt")!.toISOString(),
+      };
 
-        const payload = {
-          objectId: saved.id,
-          text: data.text,
-          senderId: data.senderId,
-          receiverId: receiver.get("auth0Id"),
-          createdAt: saved.get("createdAt")!.toISOString(),
-        };
-
-        // ---- 1. Real-time via Socket.IO (if online) ----
-        const receiverSocketId = onlineUsers.get(receiver.get("auth0Id"));
-        if (receiverSocketId) {
-          io.to(receiverSocketId).emit("newMessage", payload);
-          console.log("Delivered via Socket.IO to online user");
-        }
-
-        // ---- 2. ALWAYS SEND FCM (online or offline) ----
-        const fcmToken = receiver.get("fcmToken");
-        if (fcmToken) {
-          console.log("SENDING FCM TO:", fcmToken);
-          try {
-            await admin.messaging().send({
-              token: fcmToken,
-              notification: {
-                title: senderName,
-                body: data.text,
-              },
-              data: {
-                receiverId: receiver.get("auth0Id"),
-                receiverName: senderName,
-                receiverPic: senderPic,
-                type: "chat",
-              },
-            });
-            console.log("FCM SENT SUCCESSFULLY (online or offline)");
-          } catch (err: any) {
-            console.error("FCM ERROR:", err.message);
-            if (err.code === "messaging/registration-token-not-registered") {
-              receiver.unset("fcmToken");
-              await receiver.save(null, { useMasterKey: true });
-              console.log("Invalid token removed");
-            }
-          }
-        } else {
-          console.log("No FCM token for user:", receiver.get("auth0Id"));
-        }
-
-        // ---- Confirm to sender ----
-        socket.emit("messageSent", payload);
-
-      } catch (err: any) {
-        console.error("sendMessage error:", err);
-        socket.emit("sendError", { error: err.message || "Failed" });
+      // 1. Socket.IO (online)
+      const receiverSocketId = onlineUsers.get(receiver.get("auth0Id"));
+      if (receiverSocketId) {
+        io.to(receiverSocketId).emit("newMessage", payload);
       }
+
+      // 2. FCM DATA-ONLY (online or offline)
+      const fcmToken = receiver.get("fcmToken");
+      if (fcmToken) {
+        console.log("SENDING FCM DATA TO:", fcmToken);
+        try {
+          await admin.messaging().send({
+            token: fcmToken,
+            data: {
+              title: senderName,
+              body: data.text,
+              receiverId: receiver.get("auth0Id"),
+              receiverName: senderName,
+              receiverPic: senderPic,
+              type: "chat",
+            },
+          });
+          console.log("FCM DATA SENT");
+        } catch (err: any) {
+          console.error("FCM ERROR:", err.message);
+          if (err.code === "messaging/registration-token-not-registered") {
+            receiver.unset("fcmToken");
+            await receiver.save(null, { useMasterKey: true });
+          }
+        }
+      }
+
+      socket.emit("messageSent", payload);
+    } catch (err: any) {
+      socket.emit("sendError", { error: err.message });
     }
-  );
+  });
 
   socket.on("disconnect", () => {
-    for (const [auth0Id, sid] of onlineUsers.entries()) {
+    for (const [id, sid] of onlineUsers.entries()) {
       if (sid === socket.id) {
-        onlineUsers.delete(auth0Id);
-        console.log(`DISCONNECTED: ${auth0Id}`);
+        onlineUsers.delete(id);
+        console.log(`DISCONNECTED: ${id}`);
         break;
       }
     }
@@ -242,22 +199,14 @@ io.on("connection", (socket: Socket) => {
 });
 
 // -------------------------------------------------------------------
-// 5. Start server
+// 5. Start Server
 // -------------------------------------------------------------------
 (async () => {
-  try {
-    await parseServer.start();
-    console.log("Parse Server started");
-
-    app.use("/parse", parseServer.app);
-
-    const PORT = process.env.PORT || 1337;
-    server.listen(PORT, () => {
-      console.log(`Server: http://localhost:${PORT}/parse`);
-      console.log(`Socket.IO: ws://localhost:${PORT}`);
-    });
-  } catch (error) {
-    console.error("Server failed:", error);
-    process.exit(1);
-  }
+  await parseServer.start();
+  console.log("Parse Server started");
+  app.use("/parse", parseServer.app);
+  const PORT = process.env.PORT || 1337;
+  server.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+  });
 })();
