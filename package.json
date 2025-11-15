@@ -11,6 +11,7 @@
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
+    "firebase-admin": "^13.6.0",
     "parse-server": "^8.4.0",
     "pg": "^8.16.3",
     "socket.io": "^4.8.1",
