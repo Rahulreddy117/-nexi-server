@@ -131,47 +131,59 @@ io.on("connection", (socket: Socket) => {
   });
 
   // --- Follow ---
-  socket.on("followUser", async (data: { fromAuth0Id: string; toAuth0Id: string }) => {
-    try {
-      if (data.fromAuth0Id === data.toAuth0Id) throw new Error("Cannot follow self");
-      const exists = await new Parse.Query("_Follow")
-        .equalTo("fromAuth0Id", data.fromAuth0Id)
-        .equalTo("toAuth0Id", data.toAuth0Id)
-        .first({ useMasterKey: true });
-      if (exists) throw new Error("Already following");
+  // --- Follow ---
+socket.on("followUser", async (data: { fromAuth0Id: string; toAuth0Id: string }) => {
+  try {
+    if (data.fromAuth0Id === data.toAuth0Id) throw new Error("Cannot follow self");
 
-      const Follow = Parse.Object.extend("_Follow");
-      const f = new Follow();
-      f.set("fromAuth0Id", data.fromAuth0Id);
-      f.set("toAuth0Id", data.toAuth0Id);
-      await f.save(null, { useMasterKey: true });
+    const exists = await new Parse.Query("_Follow")
+      .equalTo("fromAuth0Id", data.fromAuth0Id)
+      .equalTo("toAuth0Id", data.toAuth0Id)
+      .first({ useMasterKey: true });
+    if (exists) throw new Error("Already following");
 
-      const payload = { ...data, action: "follow" };
-      const toSocket = onlineUsers.get(data.toAuth0Id);
-      if (toSocket) io.to(toSocket).emit("followUpdate", payload);
-      socket.emit("followSuccess", payload);
-    } catch (err: any) {
-      socket.emit("followError", { error: err.message });
-    }
-  });
+    const Follow = Parse.Object.extend("_Follow");
+    const f = new Follow();
+    f.set("fromAuth0Id", data.fromAuth0Id);
+    f.set("toAuth0Id", data.toAuth0Id);
+    await f.save(null, { useMasterKey: true });
 
-  // --- Unfollow ---
-  socket.on("unfollowUser", async (data: { fromAuth0Id: string; toAuth0Id: string }) => {
-    try {
-      const obj = await new Parse.Query("_Follow")
-        .equalTo("fromAuth0Id", data.fromAuth0Id)
-        .equalTo("toAuth0Id", data.toAuth0Id)
-        .first({ useMasterKey: true });
-      if (obj) await obj.destroy({ useMasterKey: true });
+    const payload = { ...data, action: "follow" };
 
-      const payload = { ...data, action: "unfollow" };
-      const toSocket = onlineUsers.get(data.toAuth0Id);
-      if (toSocket) io.to(toSocket).emit("followUpdate", payload);
-      socket.emit("unfollowSuccess", payload);
-    } catch (err: any) {
-      socket.emit("followError", { error: err.message });
-    }
-  });
+    // SEND TO BOTH
+    socket.emit("followSuccess", payload);                    // ← To caller
+    const toSocket = onlineUsers.get(data.toAuth0Id);
+    if (toSocket) io.to(toSocket).emit("followUpdate", payload); // ← To target
+
+    console.log("Follow success:", data.fromAuth0Id, "→", data.toAuth0Id);
+  } catch (err: any) {
+    console.error("Follow error:", err.message);
+    socket.emit("followError", { error: err.message });
+  }
+});
+
+// --- Unfollow ---
+socket.on("unfollowUser", async (data: { fromAuth0Id: string; toAuth0Id: string }) => {
+  try {
+    const obj = await new Parse.Query("_Follow")
+      .equalTo("fromAuth0Id", data.fromAuth0Id)
+      .equalTo("toAuth0Id", data.toAuth0Id)
+      .first({ useMasterKey: true });
+    if (obj) await obj.destroy({ useMasterKey: true });
+
+    const payload = { ...data, action: "unfollow" };
+
+    // SEND TO BOTH
+    socket.emit("unfollowSuccess", payload);                  // ← To caller
+    const toSocket = onlineUsers.get(data.toAuth0Id);
+    if (toSocket) io.to(toSocket).emit("followUpdate", payload); // ← To target
+
+    console.log("Unfollow success:", data.fromAuth0Id, "→", data.toAuth0Id);
+  } catch (err: any) {
+    console.error("Unfollow error:", err.message);
+    socket.emit("followError", { error: err.message });
+  }
+});
 
   socket.on("disconnect", () => {
     for (const [id, sid] of onlineUsers.entries()) {
