@@ -12,11 +12,7 @@ const app = express();
 const server = http.createServer(app);
 
 app.use(cors({ origin: "*", credentials: true }));
-app.use(express.json());
 
-// -------------------------------------------------------------------
-// 1. Parse Server Setup
-// -------------------------------------------------------------------
 const parseServer = new ParseServer({
   databaseURI: config.databaseURI,
   appId: config.appId,
@@ -33,6 +29,7 @@ const parseServer = new ParseServer({
 (async () => {
   try {
     const schema = new Parse.Schema("Message");
+
     schema.setCLP({
       get: { requiresAuthentication: true },
       find: { "*": true },
@@ -41,10 +38,12 @@ const parseServer = new ParseServer({
       delete: { requiresAuthentication: true },
       addField: { requiresAuthentication: true },
     });
+
     await schema
       .addString("senderId")
       .addString("receiverId")
       .addString("text");
+
     await schema.save();
     console.log("Message class created (no TTL)");
 
@@ -53,10 +52,12 @@ const parseServer = new ParseServer({
       await client.connect();
       const db = client.db();
       const collection = db.collection("Message");
+
       await collection.createIndexes([
         { key: { senderId: 1, createdAt: -1 }, background: true },
         { key: { receiverId: 1, createdAt: -1 }, background: true },
       ]);
+
       console.log("Message indexes created");
     } catch (err: any) {
       console.warn("Index warning:", err.message);
@@ -64,62 +65,56 @@ const parseServer = new ParseServer({
       await client.close();
     }
   } catch (err: any) {
-    if (err.code === 103) console.log("Message class exists");
-    else console.error("Schema error:", err);
+    if (err.code === 103) {
+      console.log("Message class exists");
+    } else {
+      console.error("Schema error:", err);
+    }
   }
 })();
 
 // -------------------------------------------------------------------
-// 1.5 Ensure Vibe class (Follow system) — ONLY ONE BLOCK
+// 2. FOLLOW / FOLLOWERS – _Follow class (NO CLOUD CODE)
 // -------------------------------------------------------------------
 (async () => {
   try {
-    const schema = new Parse.Schema("Vibe");
+    const schema = new Parse.Schema("_Follow");
     schema.setCLP({
-      get: { requiresAuthentication: true },
-      find: { requiresAuthentication: true },
+      find: { "*": true },
+      get: { "*": true },
       create: { requiresAuthentication: true },
-      update: { requiresAuthentication: true },
       delete: { requiresAuthentication: true },
-      addField: { requiresAuthentication: true },
     });
 
     await schema
-      .addPointer("from", "UserProfile")
-      .addPointer("to", "UserProfile")
-      .addBoolean("active")
-      .addIndex("idx_from_to", { from: 1, to: 1 });
+      .addString("fromAuth0Id")
+      .addString("toAuth0Id");
 
     await schema.save();
-    console.log("Vibe class created");
+    console.log("_Follow class created");
 
     const client = new MongoClient(config.databaseURI);
-    try {
-      await client.connect();
-      const db = client.db();
-      const collection = db.collection("Vibe");
-      await collection.createIndex(
-        { from: 1, to: 1 },
-        { unique: true, background: true }
-      );
-      console.log("Vibe unique index created");
-    } finally {
-      await client.close();
-    }
-  } catch (err: any) {
-    if (err.code === 103) console.log("Vibe class exists");
-    else console.error("Vibe schema error:", err);
+    await client.connect();
+    const col = client.db().collection("_Follow");
+    await col.createIndexes([
+      { key: { fromAuth0Id: 1 }, background: true },
+      { key: { toAuth0Id: 1 }, background: true },
+    ]);
+    await client.close();
+    console.log("_Follow indexes created");
+  } catch (e: any) {
+    if (e.code !== 103) console.error("_Follow schema error:", e);
   }
 })();
 
 // -------------------------------------------------------------------
-// 2. Socket.IO — Real-time chat
+// 3. Socket.IO — Real-time chat + follow
 // -------------------------------------------------------------------
 const io = new Server(server, {
   cors: { origin: "*", methods: ["GET", "POST"] },
 });
 
-const onlineUsers = new Map<string, string>();
+const onlineUsers = new Map<string, string>(); // auth0Id → socket.id
 
 io.on("connection", (socket: Socket) => {
   console.log("SOCKET CONNECTED:", socket.id);
@@ -130,18 +125,24 @@ io.on("connection", (socket: Socket) => {
     socket.emit("joined", { success: true });
   });
 
+  // === SEND MESSAGE ===
   socket.on("sendMessage", async (data: { senderId: string; receiverId: string; text: string }) => {
     try {
       const receiverQuery = new Parse.Query("UserProfile");
       receiverQuery.equalTo("auth0Id", data.receiverId);
       const receiver = await receiverQuery.first({ useMasterKey: true });
-      if (!receiver) return socket.emit("sendError", { error: "User not found" });
+
+      if (!receiver) {
+        socket.emit("sendError", { error: "User not found" });
+        return;
+      }
 
       const Message = Parse.Object.extend("Message");
       const message = new Message();
       message.set("senderId", data.senderId);
       message.set("receiverId", receiver.get("auth0Id"));
       message.set("text", data.text);
+
       const saved = await message.save(null, { useMasterKey: true });
 
       const payload = {
@@ -153,11 +154,65 @@ io.on("connection", (socket: Socket) => {
       };
 
       const receiverSocketId = onlineUsers.get(receiver.get("auth0Id"));
-      if (receiverSocketId) io.to(receiverSocketId).emit("newMessage", payload);
+      if (receiverSocketId) {
+        io.to(receiverSocketId).emit("newMessage", payload);
+      }
       socket.emit("messageSent", payload);
     } catch (err: any) {
       console.error("sendMessage error:", err);
       socket.emit("sendError", { error: err.message || "Failed" });
+    }
+  });
+
+  // === FOLLOW USER ===
+  socket.on("followUser", async (data: { fromAuth0Id: string; toAuth0Id: string }) => {
+    try {
+      const { fromAuth0Id, toAuth0Id } = data;
+
+      if (fromAuth0Id === toAuth0Id) {
+        socket.emit("followError", { error: "Cannot follow yourself" });
+        return;
+      }
+
+      const q = new Parse.Query("_Follow");
+      q.equalTo("fromAuth0Id", fromAuth0Id);
+      q.equalTo("toAuth0Id", toAuth0Id);
+      const exists = await q.first({ useMasterKey: true });
+      if (exists) {
+        socket.emit("followError", { error: "Already following" });
+        return;
+      }
+
+      const Follow = Parse.Object.extend("_Follow");
+      const f = new Follow();
+      f.set("fromAuth0Id", fromAuth0Id);
+      f.set("toAuth0Id", toAuth0Id);
+      await f.save(null, { useMasterKey: true });
+
+      const payload = { fromAuth0Id, toAuth0Id, action: "follow" };
+      const toSocket = onlineUsers.get(toAuth0Id);
+      if (toSocket) io.to(toSocket).emit("followUpdate", payload);
+      socket.emit("followSuccess", payload);
+    } catch (err: any) {
+      socket.emit("followError", { error: err.message });
+    }
+  });
+
+  // === UNFOLLOW USER ===
+  socket.on("unfollowUser", async (data: { fromAuth0Id: string; toAuth0Id: string }) => {
+    try {
+      const q = new Parse.Query("_Follow");
+      q.equalTo("fromAuth0Id", data.fromAuth0Id);
+      q.equalTo("toAuth0Id", data.toAuth0Id);
+      const obj = await q.first({ useMasterKey: true });
+      if (obj) await obj.destroy({ useMasterKey: true });
+
+      const payload = { fromAuth0Id: data.fromAuth0Id, toAuth0Id: data.toAuth0Id, action: "unfollow" };
+      const toSocket = onlineUsers.get(data.toAuth0Id);
+      if (toSocket) io.to(toSocket).emit("followUpdate", payload);
+      socket.emit("unfollowSuccess", payload);
+    } catch (err: any) {
+      socket.emit("followError", { error: err.message });
     }
   });
 
@@ -173,155 +228,22 @@ io.on("connection", (socket: Socket) => {
 });
 
 // -------------------------------------------------------------------
-// 3. Start Parse Server + Mount Routes
+// 4. Start server
 // -------------------------------------------------------------------
 (async () => {
   try {
     await parseServer.start();
     console.log("Parse Server started");
 
-    // Mount Parse at /parse
     app.use("/parse", parseServer.app);
 
-    // -------------------------------------------------------------------
-    // 4. Vibe Routes (Follow/Unfollow + Count + Check)
-    // -------------------------------------------------------------------
-
-    // POST /vibe → Follow
-    app.post("/vibe", async (req, res) => {
-      try {
-        const { fromAuth0Id, toAuth0Id } = req.body;
-        if (!fromAuth0Id || !toAuth0Id) {
-          return res.status(400).json({ error: "fromAuth0Id and toAuth0Id required" });
-        }
-
-        const [fromUser, toUser] = await Promise.all([
-          new Parse.Query("UserProfile").equalTo("auth0Id", fromAuth0Id).first({ useMasterKey: true }),
-          new Parse.Query("UserProfile").equalTo("auth0Id", toAuth0Id).first({ useMasterKey: true }),
-        ]);
-
-        if (!fromUser || !toUser) {
-          return res.status(404).json({ error: "User not found" });
-        }
-
-        const Vibe = Parse.Object.extend("Vibe");
-        const vibe = new Vibe();
-        vibe.set("from", fromUser);
-        vibe.set("to", toUser);
-        vibe.set("active", true);
-
-        await vibe.save(null, { useMasterKey: true });
-        res.json({ success: true, action: "vibed" });
-      } catch (err: any) {
-        if (err.code === 137) {
-          res.json({ success: true, action: "already_vibed" });
-        } else {
-          console.error("Vibe error:", err);
-          res.status(500).json({ error: err.message });
-        }
-      }
-    });
-
-    // DELETE /vibe → Unfollow
-    app.delete("/vibe", async (req, res) => {
-      try {
-        const { fromAuth0Id, toAuth0Id } = req.body;
-        if (!fromAuth0Id || !toAuth0Id) {
-          return res.status(400).json({ error: "fromAuth0Id and toAuth0Id required" });
-        }
-
-        const [fromUser, toUser] = await Promise.all([
-          new Parse.Query("UserProfile").equalTo("auth0Id", fromAuth0Id).first({ useMasterKey: true }),
-          new Parse.Query("UserProfile").equalTo("auth0Id", toAuth0Id).first({ useMasterKey: true }),
-        ]);
-
-        if (!fromUser || !toUser) {
-          return res.status(404).json({ error: "User not found" });
-        }
-
-        const vibeQuery = new Parse.Query("Vibe");
-        vibeQuery.equalTo("from", fromUser);
-        vibeQuery.equalTo("to", toUser);
-        const vibe = await vibeQuery.first({ useMasterKey: true });
-
-        if (vibe) {
-          await vibe.destroy({ useMasterKey: true });
-          res.json({ success: true, action: "unvibed" });
-        } else {
-          res.json({ success: true, action: "not_vibed" });
-        }
-      } catch (err: any) {
-        console.error("Unvibe error:", err);
-        res.status(500).json({ error: err.message });
-      }
-    });
-
-    // GET /vibes/count?userId=xxx
-    app.get("/vibes/count", async (req, res) => {
-      try {
-        const { userId } = req.query;
-        if (!userId || typeof userId !== "string") {
-          return res.status(400).json({ error: "userId required" });
-        }
-
-        const user = await new Parse.Query("UserProfile")
-          .equalTo("auth0Id", userId)
-          .first({ useMasterKey: true });
-        if (!user) return res.status(404).json({ error: "User not found" });
-
-        const count = await new Parse.Query("Vibe")
-          .equalTo("from", user)
-          .equalTo("active", true)
-          .count({ useMasterKey: true });
-
-        res.json({ count });
-      } catch (err: any) {
-        console.error("Vibes count error:", err);
-        res.status(500).json({ error: err.message });
-      }
-    });
-
-    // GET /vibes/check?from=xxx&to=yyy
-    app.get("/vibes/check", async (req, res) => {
-      try {
-        const { from, to } = req.query;
-        if (!from || !to) {
-          return res.status(400).json({ error: "from and to required" });
-        }
-
-        const [fromUser, toUser] = await Promise.all([
-          new Parse.Query("UserProfile").equalTo("auth0Id", from as string).first({ useMasterKey: true }),
-          new Parse.Query("UserProfile").equalTo("auth0Id", to as string).first({ useMasterKey: true }),
-        ]);
-
-        if (!fromUser || !toUser) {
-          return res.status(404).json({ error: "User not found" });
-        }
-
-        const vibe = await new Parse.Query("Vibe")
-          .equalTo("from", fromUser)
-          .equalTo("to", toUser)
-          .first({ useMasterKey: true });
-
-        res.json({ isVibed: !!vibe });
-      } catch (err: any) {
-        console.error("Vibe check error:", err);
-        res.status(500).json({ error: err.message });
-      }
-    });
-
-    // -------------------------------------------------------------------
-    // 5. Start HTTP + Socket.IO Server
-    // -------------------------------------------------------------------
     const PORT = process.env.PORT || 1337;
     server.listen(PORT, () => {
-      console.log(`Server running on: http://localhost:${PORT}`);
-      console.log(`Parse: http://localhost:${PORT}/parse`);
+      console.log(`Server: http://localhost:${PORT}/parse`);
       console.log(`Socket.IO: ws://localhost:${PORT}`);
-      console.log(`Vibe API: /vibe, /vibes/count, /vibes/check`);
     });
   } catch (error) {
-    console.error("Server failed to start:", error);
+    console.error("Server failed:", error);
     process.exit(1);
   }
 })();
