@@ -16,13 +16,13 @@ app.use(cors({ origin: "*", credentials: true }));
 
 // -------------------------------------------------------------------
 // 1. Firebase Admin SDK – **HARD-CODED** (your JSON)
-// -------------------------------------------------------------------
+// index.ts (Backend)
+
 if (!admin.apps.length) {
   admin.initializeApp({
     credential: admin.credential.cert({
       projectId: "nexi-a3a0c",
-      clientEmail:
-        "firebase-adminsdk-fbsvc@nexi-a3a0c.iam.gserviceaccount.com",
+      clientEmail: "firebase-adminsdk-fbsvc@nexi-a3a0c.iam.gserviceaccount.com",
       privateKey: `-----BEGIN PRIVATE KEY-----
 MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDOKH2QwsJ22Heu
 k0w40JWC1wQSHNoymKNZH6zBQh+Ky5CpycMDZkNNWkPdrgEC1U0XDp8Pkux20GXJ
@@ -50,12 +50,11 @@ LtMp0omuvAqsQjLupOtgq+3/F6ndNBSuukpY3zDNAoGAUC3iw44Q0HYZkmkFXk8B
 b2VUR7OVQhMxS5Vn60hpZHF5pgwX2ZtVcs/c8WoiA8Jaq14VUIGh3dwh8YyrfejL
 yE97vJLxPNcOWf0+LcVt1h+ynqSB/XyQ92XSOlAJj2nFF0GvHFc+kd3wHNWil1rw
 eHbGHT/xcvHJ2VaUqELfkFc=
------END PRIVATE KEY-----`,
+-----END PRIVATE KEY-----`.replace(/\\n/g, '\n'),
     }),
   });
-  console.log("Firebase Admin initialized (hard-coded)");
+  console.log("Firebase Admin initialized");
 }
-
 // -------------------------------------------------------------------
 // 2. Parse Server
 // -------------------------------------------------------------------
