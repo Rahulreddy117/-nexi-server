@@ -15,14 +15,13 @@ const server = http.createServer(app);
 app.use(cors({ origin: "*", credentials: true }));
 
 // -------------------------------------------------------------------
-// 1. Firebase Admin SDK – **HARD-CODED** (your JSON)
+// 1. Firebase Admin SDK – HARD-CODED (with \n fix)
 // -------------------------------------------------------------------
 if (!admin.apps.length) {
   admin.initializeApp({
     credential: admin.credential.cert({
       projectId: "nexi-a3a0c",
-      clientEmail:
-        "firebase-adminsdk-fbsvc@nexi-a3a0c.iam.gserviceaccount.com",
+      clientEmail: "firebase-adminsdk-fbsvc@nexi-a3a0c.iam.gserviceaccount.com",
       privateKey: `-----BEGIN PRIVATE KEY-----
 MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDOKH2QwsJ22Heu
 k0w40JWC1wQSHNoymKNZH6zBQh+Ky5CpycMDZkNNWkPdrgEC1U0XDp8Pkux20GXJ
@@ -50,10 +49,10 @@ LtMp0omuvAqsQjLupOtgq+3/F6ndNBSuukpY3zDNAoGAUC3iw44Q0HYZkmkFXk8B
 b2VUR7OVQhMxS5Vn60hpZHF5pgwX2ZtVcs/c8WoiA8Jaq14VUIGh3dwh8YyrfejL
 yE97vJLxPNcOWf0+LcVt1h+ynqSB/XyQ92XSOlAJj2nFF0GvHFc+kd3wHNWil1rw
 eHbGHT/xcvHJ2VaUqELfkFc=
------END PRIVATE KEY-----`,
+-----END PRIVATE KEY-----`.replace(/\\n/g, '\n'),
     }),
   });
-  console.log("Firebase Admin initialized (hard-coded)");
+  console.log("Firebase Admin initialized");
 }
 
 // -------------------------------------------------------------------
@@ -122,7 +121,7 @@ const io = new Server(server, {
 
 const onlineUsers = new Map<string, string>(); // auth0Id → socket.id
 
-// Cloud Function – Save FCM token from client
+// Cloud Function – Save FCM token
 Parse.Cloud.define("saveFcmToken", async (request) => {
   const { userId, fcmToken } = request.params;
   if (!userId || !fcmToken) throw "userId and fcmToken required";
@@ -159,7 +158,7 @@ io.on("connection", (socket: Socket) => {
           return;
         }
 
-        // ---- Sender info (for notification) ----
+        // ---- Sender info ----
         const senderQuery = new Parse.Query("UserProfile");
         senderQuery.equalTo("auth0Id", data.senderId);
         const sender = await senderQuery.first({ useMasterKey: true });
@@ -183,41 +182,47 @@ io.on("connection", (socket: Socket) => {
           createdAt: saved.get("createdAt")!.toISOString(),
         };
 
-        // ---- Deliver via Socket.IO if online ----
+        // ---- 1. Real-time via Socket.IO (if online) ----
         const receiverSocketId = onlineUsers.get(receiver.get("auth0Id"));
         if (receiverSocketId) {
           io.to(receiverSocketId).emit("newMessage", payload);
+          console.log("Delivered via Socket.IO to online user");
         }
-        socket.emit("messageSent", payload);
 
-        // ---- Send FCM if receiver is offline ----
-        if (!receiverSocketId) {
-          const fcmToken = receiver.get("fcmToken");
-          if (fcmToken) {
-            try {
-              await admin.messaging().send({
-                token: fcmToken,
-                notification: {
-                  title: senderName,
-                  body: data.text,
-                },
-                data: {
-                  receiverId: receiver.get("auth0Id"),
-                  receiverName: senderName,
-                  receiverPic: senderPic,
-                  type: "chat",
-                },
-              });
-              console.log("FCM push sent to offline user");
-            } catch (err: any) {
-              console.error("FCM error:", err.message);
-              if (err.code === "messaging/registration-token-not-registered") {
-                receiver.unset("fcmToken");
-                await receiver.save(null, { useMasterKey: true });
-              }
+        // ---- 2. ALWAYS SEND FCM (online or offline) ----
+        const fcmToken = receiver.get("fcmToken");
+        if (fcmToken) {
+          console.log("SENDING FCM TO:", fcmToken);
+          try {
+            await admin.messaging().send({
+              token: fcmToken,
+              notification: {
+                title: senderName,
+                body: data.text,
+              },
+              data: {
+                receiverId: receiver.get("auth0Id"),
+                receiverName: senderName,
+                receiverPic: senderPic,
+                type: "chat",
+              },
+            });
+            console.log("FCM SENT SUCCESSFULLY (online or offline)");
+          } catch (err: any) {
+            console.error("FCM ERROR:", err.message);
+            if (err.code === "messaging/registration-token-not-registered") {
+              receiver.unset("fcmToken");
+              await receiver.save(null, { useMasterKey: true });
+              console.log("Invalid token removed");
             }
           }
+        } else {
+          console.log("No FCM token for user:", receiver.get("auth0Id"));
         }
+
+        // ---- Confirm to sender ----
+        socket.emit("messageSent", payload);
+
       } catch (err: any) {
         console.error("sendMessage error:", err);
         socket.emit("sendError", { error: err.message || "Failed" });
