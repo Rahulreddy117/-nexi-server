@@ -229,22 +229,26 @@ app.post('/follow', async (req, res) => {
     follow.set("followingId", followingId);
     await follow.save(null, { useMasterKey: true });
 
-    // Update follower's followingCount
+    // Update follower's followingCount (with safeguard against negative)
     const followerQuery = new Parse.Query("UserProfile");
     followerQuery.equalTo("auth0Id", followerId);
     const followerProfile = await followerQuery.first({ useMasterKey: true });
     if (followerProfile) {
-      followerProfile.increment("followingCount");
+      const currentFollowing = followerProfile.get("followingCount") || 0;
+      followerProfile.set("followingCount", Math.max(0, currentFollowing + 1));
       await followerProfile.save(null, { useMasterKey: true });
+      console.log(`Updated followingCount for ${followerId}: ${currentFollowing} -> ${followerProfile.get("followingCount")}`);
     }
 
-    // Update following's followersCount
+    // Update following's followersCount (with safeguard against negative)
     const followingQuery = new Parse.Query("UserProfile");
     followingQuery.equalTo("auth0Id", followingId);
     const followingProfile = await followingQuery.first({ useMasterKey: true });
     if (followingProfile) {
-      followingProfile.increment("followersCount");
+      const currentFollowers = followingProfile.get("followersCount") || 0;
+      followingProfile.set("followersCount", Math.max(0, currentFollowers + 1));
       await followingProfile.save(null, { useMasterKey: true });
+      console.log(`Updated followersCount for ${followingId}: ${currentFollowers} -> ${followingProfile.get("followersCount")}`);
     }
 
     // Create notification only if it doesn't exist
@@ -307,22 +311,28 @@ app.post('/unfollow', async (req, res) => {
     }
     await existingFollow.destroy({ useMasterKey: true });
 
-    // Decrement follower's followingCount
+    // Decrement follower's followingCount (with safeguard against negative)
     const followerQuery = new Parse.Query("UserProfile");
     followerQuery.equalTo("auth0Id", followerId);
     const followerProfile = await followerQuery.first({ useMasterKey: true });
     if (followerProfile) {
-      followerProfile.increment("followingCount", -1);
+      const currentFollowing = followerProfile.get("followingCount") || 0;
+      const newFollowing = Math.max(0, currentFollowing - 1);
+      followerProfile.set("followingCount", newFollowing);
       await followerProfile.save(null, { useMasterKey: true });
+      console.log(`Updated followingCount for ${followerId}: ${currentFollowing} -> ${newFollowing}`);
     }
 
-    // Decrement following's followersCount
+    // Decrement following's followersCount (with safeguard against negative)
     const followingQuery = new Parse.Query("UserProfile");
     followingQuery.equalTo("auth0Id", followingId);
     const followingProfile = await followingQuery.first({ useMasterKey: true });
     if (followingProfile) {
-      followingProfile.increment("followersCount", -1);
+      const currentFollowers = followingProfile.get("followersCount") || 0;
+      const newFollowers = Math.max(0, currentFollowers - 1);
+      followingProfile.set("followersCount", newFollowers);
       await followingProfile.save(null, { useMasterKey: true });
+      console.log(`Updated followersCount for ${followingId}: ${currentFollowers} -> ${newFollowers}`);
     }
 
     // Delete notification (if unread, emit decrement to followed)
@@ -337,10 +347,10 @@ app.post('/unfollow', async (req, res) => {
       await existingNotif.destroy({ useMasterKey: true });
     }
 
-    // Emit decrement if it was unread
+    // Emit decrement if it was unread (use a separate event for clarity)
     const followedSocketId = onlineUsers.get(followingId);
     if (followedSocketId && wasUnread) {
-      io.to(followedSocketId).emit("newUnreadNotification"); // Reuse event, but with negative logic in client if needed; for simplicity, handle as -1 in a separate event if expanding
+      io.to(followedSocketId).emit("unreadNotificationRemoved");
     }
 
     res.json({ success: true });
@@ -349,6 +359,38 @@ app.post('/unfollow', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// -------------------------------------------------------------------
+// One-time migration to fix negative counts (run once, then comment out)
+// -------------------------------------------------------------------
+(async () => {
+  try {
+    console.log("Running one-time migration to fix negative counts...");
+    const UserProfileQuery = new Parse.Query("UserProfile");
+    const profiles = await UserProfileQuery.find({ useMasterKey: true });
+    let fixed = 0;
+    for (const profile of profiles) {
+      let changed = false;
+      const followers = profile.get("followersCount");
+      if (followers !== undefined && followers < 0) {
+        profile.set("followersCount", 0);
+        changed = true;
+      }
+      const following = profile.get("followingCount");
+      if (following !== undefined && following < 0) {
+        profile.set("followingCount", 0);
+        changed = true;
+      }
+      if (changed) {
+        await profile.save(null, { useMasterKey: true });
+        fixed++;
+      }
+    }
+    console.log(`Migration complete: Fixed ${fixed} profiles with negative counts.`);
+  } catch (err: any) {
+    console.error("Migration error:", err);
+  }
+})();
 
 // -------------------------------------------------------------------
 // 5. Socket.IO — Real-time chat + follow notifications
