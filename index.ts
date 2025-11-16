@@ -30,7 +30,6 @@ const parseServer = new ParseServer({
   try {
     const schema = new Parse.Schema("UserProfile");
 
-    // Allow public read, auth for write
     schema.setCLP({
       get: { "*": true },
       find: { "*": true },
@@ -40,7 +39,6 @@ const parseServer = new ParseServer({
       addField: { requiresAuthentication: true },
     });
 
-    // Add fields (if not exist)
     await schema
       .addString("auth0Id")
       .addString("email")
@@ -55,7 +53,6 @@ const parseServer = new ParseServer({
     await schema.save();
     console.log("UserProfile class updated");
 
-    // Indexes for fast lookup
     const client = new MongoClient(config.databaseURI);
     try {
       await client.connect();
@@ -65,7 +62,6 @@ const parseServer = new ParseServer({
       await collection.createIndexes([
         { key: { auth0Id: 1 }, unique: true, background: true },
       ]);
-
       console.log("UserProfile indexes created");
     } catch (err: any) {
       console.warn("Index warning (safe to ignore):", err.message);
@@ -88,7 +84,6 @@ const parseServer = new ParseServer({
   try {
     const schema = new Parse.Schema("Follow");
 
-    // Require auth for actions
     schema.setCLP({
       get: { requiresAuthentication: true },
       find: { "*": true },
@@ -98,13 +93,11 @@ const parseServer = new ParseServer({
       addField: { requiresAuthentication: true },
     });
 
-    // Fields
     await schema.addString("followerId").addString("followingId");
 
     await schema.save();
     console.log("Follow class created");
 
-    // Indexes for uniqueness and fast queries
     const client = new MongoClient(config.databaseURI);
     try {
       await client.connect();
@@ -116,7 +109,6 @@ const parseServer = new ParseServer({
         { key: { followerId: 1 }, background: true },
         { key: { followingId: 1 }, background: true },
       ]);
-
       console.log("Follow indexes created");
     } catch (err: any) {
       console.warn("Index warning (safe to ignore):", err.message);
@@ -139,7 +131,6 @@ const parseServer = new ParseServer({
   try {
     const schema = new Parse.Schema("Message");
 
-    // Allow master key to read/write, no session needed
     schema.setCLP({
       get: { requiresAuthentication: true },
       find: { "*": true },
@@ -149,7 +140,6 @@ const parseServer = new ParseServer({
       addField: { requiresAuthentication: true },
     });
 
-    // Only these fields — clean & simple
     await schema
       .addString("senderId")
       .addString("receiverId")
@@ -158,7 +148,6 @@ const parseServer = new ParseServer({
     await schema.save();
     console.log("Message class created (no TTL)");
 
-    // Fast queries with compound indexes
     const client = new MongoClient(config.databaseURI);
     try {
       await client.connect();
@@ -169,8 +158,7 @@ const parseServer = new ParseServer({
         { key: { senderId: 1, createdAt: -1 }, background: true },
         { key: { receiverId: 1, createdAt: -1 }, background: true },
       ]);
-
-      console.log("Message indexes created (fast $or queries)");
+      console.log("Message indexes created");
     } catch (err: any) {
       console.warn("Index warning (safe to ignore):", err.message);
     } finally {
@@ -180,13 +168,64 @@ const parseServer = new ParseServer({
     if (err.code === 103) {
       console.log("Message class exists");
     } else {
-      console.error("Schema error:", err);
+      console.error("Message schema error:", err);
     }
   }
 })();
 
 // -------------------------------------------------------------------
-// 4. Socket.IO — Real-time chat
+// 4. Ensure FollowNotification class + CLP + Indexes
+// -------------------------------------------------------------------
+(async () => {
+  try {
+    const schema = new Parse.Schema("FollowNotification");
+
+    schema.setCLP({
+      get: { requiresAuthentication: true },
+      find: { requiresAuthentication: true },
+      create: { requiresAuthentication: true },
+      update: { requiresAuthentication: true },
+      delete: { requiresAuthentication: true },
+      addField: { requiresAuthentication: true },
+    });
+
+    await schema
+      .addString("followerId")
+      .addString("followedId")
+      .addPointer("followerProfile", "UserProfile")
+      .addBoolean("read", { defaultValue: false });
+
+    await schema.save();
+    console.log("FollowNotification class created");
+
+    const client = new MongoClient(config.databaseURI);
+    try {
+      await client.connect();
+      const db = client.db();
+      const collection = db.collection("FollowNotification");
+
+      await collection.createIndexes([
+        { key: { followedId: 1, createdAt: -1 }, background: true },
+        { key: { read: 1 }, background: true },
+        { key: { followerId: 1, followedId: 1 }, unique: true, background: true },
+      ]);
+      console.log("FollowNotification indexes created");
+    } catch (err: any) {
+      console.warn("Index warning (safe to ignore):", err.message);
+    } finally {
+      await client.close();
+    }
+  } catch (err: any) {
+    if (err.code === 103) {
+      console.log("FollowNotification class exists");
+    } else {
+      console.error("FollowNotification schema error:", err);
+    }
+  }
+})();
+
+// -------------------------------------------------------------------
+// 5. Socket.IO — Real-time chat + follow notifications
 // -------------------------------------------------------------------
 const io = new Server(server, {
   cors: { origin: "*", methods: ["GET", "POST"] },
@@ -205,7 +244,6 @@ io.on("connection", (socket: Socket) => {
 
   socket.on("sendMessage", async (data: { senderId: string; receiverId: string; text: string }) => {
     try {
-      // Verify receiver exists
       const receiverQuery = new Parse.Query("UserProfile");
       receiverQuery.equalTo("auth0Id", data.receiverId);
       const receiver = await receiverQuery.first({ useMasterKey: true });
@@ -215,17 +253,14 @@ io.on("connection", (socket: Socket) => {
         return;
       }
 
-      // Save message
       const Message = Parse.Object.extend("Message");
       const message = new Message();
-
       message.set("senderId", data.senderId);
       message.set("receiverId", receiver.get("auth0Id"));
       message.set("text", data.text);
 
       const saved = await message.save(null, { useMasterKey: true });
 
-      // Send to both users
       const payload = {
         objectId: saved.id,
         text: data.text,
@@ -257,7 +292,7 @@ io.on("connection", (socket: Socket) => {
 });
 
 // -------------------------------------------------------------------
-// 5. Start server
+// 6. Start server
 // -------------------------------------------------------------------
 (async () => {
   try {
