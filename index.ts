@@ -30,6 +30,7 @@ const parseServer = new ParseServer({
   try {
     const schema = new Parse.Schema("Message");
 
+    // Allow master key to read/write, no session needed
     schema.setCLP({
       get: { requiresAuthentication: true },
       find: { "*": true },
@@ -39,6 +40,7 @@ const parseServer = new ParseServer({
       addField: { requiresAuthentication: true },
     });
 
+    // Only these fields — clean & simple
     await schema
       .addString("senderId")
       .addString("receiverId")
@@ -47,6 +49,7 @@ const parseServer = new ParseServer({
     await schema.save();
     console.log("Message class created (no TTL)");
 
+    // Fast queries with compound indexes
     const client = new MongoClient(config.databaseURI);
     try {
       await client.connect();
@@ -74,99 +77,7 @@ const parseServer = new ParseServer({
 })();
 
 // -------------------------------------------------------------------
-// 2. _Follow Class + Indexes
-// -------------------------------------------------------------------
-(async () => {
-  try {
-    const schema = new Parse.Schema("_Follow");
-    schema.setCLP({
-      get: { requiresAuthentication: true },
-      find: { requiresAuthentication: true },
-      create: { requiresAuthentication: true },
-      delete: { requiresAuthentication: true },
-    });
-    await schema.addPointer("follower", "_User")
-                 .addPointer("following", "_User");
-    await schema.save();
-    console.log("_Follow class ready");
-
-    const client = new MongoClient(config.databaseURI);
-    await client.connect();
-    const db = client.db();
-    await db.collection("_Follow").createIndexes([
-      { key: { follower: 1, following: 1 }, unique: true },
-      { key: { following: 1 } },
-      { key: { follower: 1 } },
-    ], { background: true });
-    await client.close();
-    console.log("_Follow indexes created");
-  } catch (err: any) {
-    if (err.code !== 103) console.error("Follow schema error:", err);
-  }
-})();
-
-// -------------------------------------------------------------------
-// 3. Cloud Functions: followUser / unfollowUser (using auth0Id)
-// -------------------------------------------------------------------
-Parse.Cloud.define("followUser", async (req) => {
-  const { myAuth0Id, targetAuth0Id } = req.params;
-
-  if (!myAuth0Id || !targetAuth0Id) throw "Missing IDs";
-  if (myAuth0Id === targetAuth0Id) throw "Cannot follow self";
-
-  const [me, target] = await Promise.all([
-    new Parse.Query("_User").equalTo("auth0Id", myAuth0Id).first({ useMasterKey: true }),
-    new Parse.Query("_User").equalTo("auth0Id", targetAuth0Id).first({ useMasterKey: true }),
-  ]);
-
-  if (!me || !target) throw "User not found";
-
-  const exist = await new Parse.Query("_Follow")
-    .equalTo("follower", me)
-    .equalTo("following", target)
-    .first({ useMasterKey: true });
-  if (exist) throw "Already following";
-
-  const f = new Parse.Object("_Follow");
-  f.set("follower", me);
-  f.set("following", target);
-
-  me.increment("followingCount");
-  target.increment("followersCount");
-
-  await Parse.Object.saveAll([f, me, target], { useMasterKey: true });
-  return { success: true };
-});
-
-Parse.Cloud.define("unfollowUser", async (req) => {
-  const { myAuth0Id, targetAuth0Id } = req.params;
-
-  if (!myAuth0Id || !targetAuth0Id) throw "Missing IDs";
-
-  const [me, target] = await Promise.all([
-    new Parse.Query("_User").equalTo("auth0Id", myAuth0Id).first({ useMasterKey: true }),
-    new Parse.Query("_User").equalTo("auth0Id", targetAuth0Id).first({ useMasterKey: true }),
-  ]);
-
-  if (!me || !target) throw "User not found";
-
-  const follow = await new Parse.Query("_Follow")
-    .equalTo("follower", me)
-    .equalTo("following", target)
-    .first({ useMasterKey: true });
-  if (!follow) throw "Not following";
-
-  me.increment("followingCount", -1);
-  target.increment("followersCount", -1);
-
-  await Parse.Object.saveAll([me, target], { useMasterKey: true });
-  await follow.destroy({ useMasterKey: true });
-
-  return { success: true };
-});
-
-// -------------------------------------------------------------------
-// 4. Socket.IO — Real-time chat (UNCHANGED)
+// 2. Socket.IO — Real-time chat
 // -------------------------------------------------------------------
 const io = new Server(server, {
   cors: { origin: "*", methods: ["GET", "POST"] },
@@ -185,6 +96,7 @@ io.on("connection", (socket: Socket) => {
 
   socket.on("sendMessage", async (data: { senderId: string; receiverId: string; text: string }) => {
     try {
+      // Verify receiver exists
       const receiverQuery = new Parse.Query("UserProfile");
       receiverQuery.equalTo("auth0Id", data.receiverId);
       const receiver = await receiverQuery.first({ useMasterKey: true });
@@ -194,6 +106,7 @@ io.on("connection", (socket: Socket) => {
         return;
       }
 
+      // Save message
       const Message = Parse.Object.extend("Message");
       const message = new Message();
 
@@ -203,6 +116,7 @@ io.on("connection", (socket: Socket) => {
 
       const saved = await message.save(null, { useMasterKey: true });
 
+      // Send to both users
       const payload = {
         objectId: saved.id,
         text: data.text,
@@ -234,7 +148,7 @@ io.on("connection", (socket: Socket) => {
 });
 
 // -------------------------------------------------------------------
-// 5. Start server
+// 3. Start server
 // -------------------------------------------------------------------
 (async () => {
   try {
