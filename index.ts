@@ -10,6 +10,7 @@ import { MongoClient } from "mongodb";
 
 const app = express();
 const server = http.createServer(app);
+
 app.use(cors({ origin: "*", credentials: true }));
 
 const parseServer = new ParseServer({
@@ -20,207 +21,149 @@ const parseServer = new ParseServer({
   allowClientClassCreation: config.allowClientClassCreation,
   maintenanceKey: config.maintenanceKey,
   enableInsecureAuthAdapters: false,
-  cloud: __dirname + "/cloud.js", // REQUIRED
 });
 
 // -------------------------------------------------------------------
-// 1. FORCE CREATE _Follow + COUNTERS
-// -------------------------------------------------------------------
-(async () => {
-  try {
-    // === CREATE _Follow CLASS ===
-    const followSchema = new Parse.Schema("_Follow");
-    followSchema.setCLP({
-      get: { requiresAuthentication: true },
-      find: { requiresAuthentication: true },
-      create: { requiresAuthentication: true },
-      delete: { requiresAuthentication: true },
-    });
-
-    try {
-      await followSchema.addPointer("follower", "_User");
-      await followSchema.addPointer("following", "_User");
-      await followSchema.save();
-      console.log("_Follow class CREATED");
-    } catch (e: any) {
-      if (e.message.includes("already exists")) {
-        console.log("_Follow class already exists");
-      } else {
-        throw e;
-      }
-    }
-
-    // === ADD COUNTERS TO _User ===
-    const userSchema = new Parse.Schema("_User");
-    try {
-      await userSchema.addNumber("followingCount");
-      await userSchema.save();
-      console.log("followingCount added");
-    } catch (e: any) {
-      if (!e.message.includes("already exists")) throw e;
-    }
-
-    try {
-      await userSchema.addNumber("followersCount");
-      await userSchema.save();
-      console.log("followersCount added");
-    } catch (e: any) {
-      if (!e.message.includes("already exists")) throw e;
-    }
-
-    // === INDEXES ===
-    const client = new MongoClient(config.databaseURI);
-    await client.connect();
-    const db = client.db();
-
-    await db.collection("_Follow").createIndexes([
-      { key: { follower: 1, following: 1 }, unique: true },
-      { key: { following: 1 } },
-      { key: { follower: 1 } },
-    ], { background: true });
-
-    await client.close();
-    console.log("_Follow indexes created");
-
-  } catch (err: any) {
-    console.error("Schema setup failed:", err);
-  }
-})();
-
-// -------------------------------------------------------------------
-// 2. Message Class (unchanged)
+// 1. Ensure Message class + CLP + Indexes (NO expiresAt)
 // -------------------------------------------------------------------
 (async () => {
   try {
     const schema = new Parse.Schema("Message");
+
+    // Allow master key to read/write, no session needed
     schema.setCLP({
       get: { requiresAuthentication: true },
       find: { "*": true },
       create: { requiresAuthentication: true },
       update: { requiresAuthentication: true },
       delete: { requiresAuthentication: true },
+      addField: { requiresAuthentication: true },
     });
-    await schema.addString("senderId").addString("receiverId").addString("text");
+
+    // Only these fields — clean & simple
+    await schema
+      .addString("senderId")
+      .addString("receiverId")
+      .addString("text");
+
     await schema.save();
-    console.log("Message class ready");
+    console.log("Message class created (no TTL)");
+
+    // Fast queries with compound indexes
+    const client = new MongoClient(config.databaseURI);
+    try {
+      await client.connect();
+      const db = client.db();
+      const collection = db.collection("Message");
+
+      await collection.createIndexes([
+        { key: { senderId: 1, createdAt: -1 }, background: true },
+        { key: { receiverId: 1, createdAt: -1 }, background: true },
+      ]);
+
+      console.log("Message indexes created (fast $or queries)");
+    } catch (err: any) {
+      console.warn("Index warning (safe to ignore):", err.message);
+    } finally {
+      await client.close();
+    }
   } catch (err: any) {
-    if (err.code !== 103) console.error("Message schema:", err);
+    if (err.code === 103) {
+      console.log("Message class exists");
+    } else {
+      console.error("Schema error:", err);
+    }
   }
 })();
 
 // -------------------------------------------------------------------
-// 3. Cloud Functions
+// 2. Socket.IO — Real-time chat
 // -------------------------------------------------------------------
-Parse.Cloud.define("followUser", async (req) => {
-  const { myAuth0Id, targetAuth0Id } = req.params;
-  if (!myAuth0Id || !targetAuth0Id || myAuth0Id === targetAuth0Id) throw "Invalid";
-
-  const [me, target] = await Promise.all([
-    new Parse.Query("_User").equalTo("auth0Id", myAuth0Id).first({ useMasterKey: true }),
-    new Parse.Query("_User").equalTo("auth0Id", targetAuth0Id).first({ useMasterKey: true }),
-  ]);
-
-  if (!me || !target) throw "User not found";
-
-  const exist = await new Parse.Query("_Follow")
-    .equalTo("follower", me)
-    .equalTo("following", target)
-    .first({ useMasterKey: true });
-  if (exist) throw "Already following";
-
-  const f = new Parse.Object("_Follow");
-  f.set("follower", me);
-  f.set("following", target);
-
-  me.increment("followingCount");
-  target.increment("followersCount");
-
-  await Parse.Object.saveAll([f, me, target], { useMasterKey: true });
-  return { success: true };
+const io = new Server(server, {
+  cors: { origin: "*", methods: ["GET", "POST"] },
 });
 
-Parse.Cloud.define("unfollowUser", async (req) => {
-  const { myAuth0Id, targetAuth0Id } = req.params;
-  if (!myAuth0Id || !targetAuth0Id) throw "Invalid";
-
-  const [me, target] = await Promise.all([
-    new Parse.Query("_User").equalTo("auth0Id", myAuth0Id).first({ useMasterKey: true }),
-    new Parse.Query("_User").equalTo("auth0Id", targetAuth0Id).first({ useMasterKey: true }),
-  ]);
-
-  if (!me || !target) throw "User not found";
-
-  const follow = await new Parse.Query("_Follow")
-    .equalTo("follower", me)
-    .equalTo("following", target)
-    .first({ useMasterKey: true });
-  if (!follow) throw "Not following";
-
-  me.increment("followingCount", -1);
-  target.increment("followersCount", -1);
-
-  await Parse.Object.saveAll([me, target], { useMasterKey: true });
-  await follow.destroy({ useMasterKey: true });
-  return { success: true };
-});
-
-// -------------------------------------------------------------------
-// 4. Socket.IO (unchanged)
-// -------------------------------------------------------------------
-const io = new Server(server, { cors: { origin: "*" } });
-const onlineUsers = new Map<string, string>();
+const onlineUsers = new Map<string, string>(); // auth0Id → socket.id
 
 io.on("connection", (socket: Socket) => {
+  console.log("SOCKET CONNECTED:", socket.id);
+
   socket.on("join", (auth0Id: string) => {
     onlineUsers.set(auth0Id, socket.id);
+    console.log(`JOIN: ${auth0Id} → ${socket.id}`);
     socket.emit("joined", { success: true });
   });
 
   socket.on("sendMessage", async (data: { senderId: string; receiverId: string; text: string }) => {
     try {
-      const receiver = await new Parse.Query("UserProfile")
-        .equalTo("auth0Id", data.receiverId)
-        .first({ useMasterKey: true });
-      if (!receiver) return socket.emit("sendError", { error: "User not found" });
+      // Verify receiver exists
+      const receiverQuery = new Parse.Query("UserProfile");
+      receiverQuery.equalTo("auth0Id", data.receiverId);
+      const receiver = await receiverQuery.first({ useMasterKey: true });
 
+      if (!receiver) {
+        socket.emit("sendError", { error: "User not found" });
+        return;
+      }
+
+      // Save message
       const Message = Parse.Object.extend("Message");
       const message = new Message();
+
       message.set("senderId", data.senderId);
-      message.set("receiverId", data.receiverId);
+      message.set("receiverId", receiver.get("auth0Id"));
       message.set("text", data.text);
+
       const saved = await message.save(null, { useMasterKey: true });
 
+      // Send to both users
       const payload = {
         objectId: saved.id,
         text: data.text,
         senderId: data.senderId,
-        receiverId: data.receiverId,
-        createdAt: saved.get("createdAt").toISOString(),
+        receiverId: receiver.get("auth0Id"),
+        createdAt: saved.get("createdAt")!.toISOString(),
       };
 
-      const receiverSocket = onlineUsers.get(data.receiverId);
-      if (receiverSocket) io.to(receiverSocket).emit("newMessage", payload);
+      const receiverSocketId = onlineUsers.get(receiver.get("auth0Id"));
+      if (receiverSocketId) {
+        io.to(receiverSocketId).emit("newMessage", payload);
+      }
       socket.emit("messageSent", payload);
     } catch (err: any) {
-      socket.emit("sendError", { error: err.message });
+      console.error("sendMessage error:", err);
+      socket.emit("sendError", { error: err.message || "Failed" });
     }
   });
 
   socket.on("disconnect", () => {
-    for (const [id, sid] of onlineUsers.entries()) {
-      if (sid === socket.id) onlineUsers.delete(id);
+    for (const [auth0Id, sid] of onlineUsers.entries()) {
+      if (sid === socket.id) {
+        onlineUsers.delete(auth0Id);
+        console.log(`DISCONNECTED: ${auth0Id}`);
+        break;
+      }
     }
   });
 });
 
 // -------------------------------------------------------------------
-// 5. Start Server
+// 3. Start server
 // -------------------------------------------------------------------
 (async () => {
-  await parseServer.start();
-  app.use("/parse", parseServer.app);
-  const PORT = process.env.PORT || 1337;
-  server.listen(PORT, () => {
-    console.log(`Server running on http://localhost:${PORT}/parse`);
-  });
+  try {
+    await parseServer.start();
+    console.log("Parse Server started");
+
+    app.use("/parse", parseServer.app);
+
+    const PORT = process.env.PORT || 1337;
+    server.listen(PORT, () => {
+      console.log(`Server: http://localhost:${PORT}/parse`);
+      console.log(`Socket.IO: ws://localhost:${PORT}`);
+    });
+  } catch (error) {
+    console.error("Server failed:", error);
+    process.exit(1);
+  }
 })();
