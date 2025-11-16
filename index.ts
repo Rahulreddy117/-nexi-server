@@ -24,7 +24,116 @@ const parseServer = new ParseServer({
 });
 
 // -------------------------------------------------------------------
-// 1. Ensure Message class + CLP + Indexes (NO expiresAt)
+// 1. Ensure UserProfile class + CLP + Indexes
+// -------------------------------------------------------------------
+(async () => {
+  try {
+    const schema = new Parse.Schema("UserProfile");
+
+    // Allow public read, auth for write
+    schema.setCLP({
+      get: { "*": true },
+      find: { "*": true },
+      create: { requiresAuthentication: true },
+      update: { requiresAuthentication: true },
+      delete: { requiresAuthentication: true },
+      addField: { requiresAuthentication: true },
+    });
+
+    // Add fields (if not exist)
+    await schema
+      .addString("auth0Id")
+      .addString("email")
+      .addString("username")
+      .addString("name")
+      .addString("bio")
+      .addString("profilePicUrl")
+      .addString("height")
+      .addNumber("followersCount", { defaultValue: 0 })
+      .addNumber("followingCount", { defaultValue: 0 });
+
+    await schema.save();
+    console.log("UserProfile class updated");
+
+    // Indexes for fast lookup
+    const client = new MongoClient(config.databaseURI);
+    try {
+      await client.connect();
+      const db = client.db();
+      const collection = db.collection("UserProfile");
+
+      await collection.createIndexes([
+        { key: { auth0Id: 1 }, unique: true, background: true },
+      ]);
+
+      console.log("UserProfile indexes created");
+    } catch (err: any) {
+      console.warn("Index warning (safe to ignore):", err.message);
+    } finally {
+      await client.close();
+    }
+  } catch (err: any) {
+    if (err.code === 103) {
+      console.log("UserProfile class exists");
+    } else {
+      console.error("UserProfile schema error:", err);
+    }
+  }
+})();
+
+// -------------------------------------------------------------------
+// 2. Ensure Follow class + CLP + Indexes
+// -------------------------------------------------------------------
+(async () => {
+  try {
+    const schema = new Parse.Schema("Follow");
+
+    // Require auth for actions
+    schema.setCLP({
+      get: { requiresAuthentication: true },
+      find: { "*": true },
+      create: { requiresAuthentication: true },
+      update: { requiresAuthentication: true },
+      delete: { requiresAuthentication: true },
+      addField: { requiresAuthentication: true },
+    });
+
+    // Fields
+    await schema.addString("followerId").addString("followingId");
+
+    await schema.save();
+    console.log("Follow class created");
+
+    // Indexes for uniqueness and fast queries
+    const client = new MongoClient(config.databaseURI);
+    try {
+      await client.connect();
+      const db = client.db();
+      const collection = db.collection("Follow");
+
+      await collection.createIndexes([
+        { key: { followerId: 1, followingId: 1 }, unique: true, background: true },
+        { key: { followerId: 1 }, background: true },
+        { key: { followingId: 1 }, background: true },
+      ]);
+
+      console.log("Follow indexes created");
+    } catch (err: any) {
+      console.warn("Index warning (safe to ignore):", err.message);
+    } finally {
+      await client.close();
+    }
+  } catch (err: any) {
+    if (err.code === 103) {
+      console.log("Follow class exists");
+    } else {
+      console.error("Follow schema error:", err);
+    }
+  }
+})();
+
+// -------------------------------------------------------------------
+// 3. Ensure Message class + CLP + Indexes (NO expiresAt)
 // -------------------------------------------------------------------
 (async () => {
   try {
@@ -77,7 +186,7 @@ const parseServer = new ParseServer({
 })();
 
 // -------------------------------------------------------------------
-// 2. Socket.IO — Real-time chat
+// 4. Socket.IO — Real-time chat
 // -------------------------------------------------------------------
 const io = new Server(server, {
   cors: { origin: "*", methods: ["GET", "POST"] },
@@ -148,7 +257,7 @@ io.on("connection", (socket: Socket) => {
 });
 
 // -------------------------------------------------------------------
-// 3. Start server
+// 5. Start server
 // -------------------------------------------------------------------
 (async () => {
   try {

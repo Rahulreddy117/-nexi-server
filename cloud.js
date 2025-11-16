@@ -1,2 +1,0 @@
-// cloud.js
-module.exports = {};
