@@ -20,11 +20,75 @@ const parseServer = new ParseServer({
   allowClientClassCreation: config.allowClientClassCreation,
   maintenanceKey: config.maintenanceKey,
   enableInsecureAuthAdapters: false,
-  cloud: __dirname + "/cloud.js", // ← REQUIRED
+  cloud: __dirname + "/cloud.js", // REQUIRED
 });
 
 // -------------------------------------------------------------------
-// 1. Message Class
+// 1. FORCE CREATE _Follow + COUNTERS
+// -------------------------------------------------------------------
+(async () => {
+  try {
+    // === CREATE _Follow CLASS ===
+    const followSchema = new Parse.Schema("_Follow");
+    followSchema.setCLP({
+      get: { requiresAuthentication: true },
+      find: { requiresAuthentication: true },
+      create: { requiresAuthentication: true },
+      delete: { requiresAuthentication: true },
+    });
+
+    try {
+      await followSchema.addPointer("follower", "_User");
+      await followSchema.addPointer("following", "_User");
+      await followSchema.save();
+      console.log("_Follow class CREATED");
+    } catch (e: any) {
+      if (e.message.includes("already exists")) {
+        console.log("_Follow class already exists");
+      } else {
+        throw e;
+      }
+    }
+
+    // === ADD COUNTERS TO _User ===
+    const userSchema = new Parse.Schema("_User");
+    try {
+      await userSchema.addNumber("followingCount");
+      await userSchema.save();
+      console.log("followingCount added");
+    } catch (e: any) {
+      if (!e.message.includes("already exists")) throw e;
+    }
+
+    try {
+      await userSchema.addNumber("followersCount");
+      await userSchema.save();
+      console.log("followersCount added");
+    } catch (e: any) {
+      if (!e.message.includes("already exists")) throw e;
+    }
+
+    // === INDEXES ===
+    const client = new MongoClient(config.databaseURI);
+    await client.connect();
+    const db = client.db();
+
+    await db.collection("_Follow").createIndexes([
+      { key: { follower: 1, following: 1 }, unique: true },
+      { key: { following: 1 } },
+      { key: { follower: 1 } },
+    ], { background: true });
+
+    await client.close();
+    console.log("_Follow indexes created");
+
+  } catch (err: any) {
+    console.error("Schema setup failed:", err);
+  }
+})();
+
+// -------------------------------------------------------------------
+// 2. Message Class (unchanged)
 // -------------------------------------------------------------------
 (async () => {
   try {
@@ -39,73 +103,17 @@ const parseServer = new ParseServer({
     await schema.addString("senderId").addString("receiverId").addString("text");
     await schema.save();
     console.log("Message class ready");
-
-    const client = new MongoClient(config.databaseURI);
-    await client.connect();
-    const db = client.db();
-    await db.collection("Message").createIndexes([
-      { key: { senderId: 1, createdAt: -1 } },
-      { key: { receiverId: 1, createdAt: -1 } },
-    ]);
-    await client.close();
   } catch (err: any) {
     if (err.code !== 103) console.error("Message schema:", err);
   }
 })();
 
 // -------------------------------------------------------------------
-// 2. _Follow Class
-// -------------------------------------------------------------------
-(async () => {
-  try {
-    const schema = new Parse.Schema("_Follow");
-    schema.setCLP({
-      get: { requiresAuthentication: true },
-      find: { requiresAuthentication: true },
-      create: { requiresAuthentication: true },
-      delete: { requiresAuthentication: true },
-    });
-    await schema.addPointer("follower", "_User").addPointer("following", "_User");
-    await schema.save();
-    console.log("_Follow class ready");
-
-    const client = new MongoClient(config.databaseURI);
-    await client.connect();
-    const db = client.db();
-    await db.collection("_Follow").createIndexes([
-      { key: { follower: 1, following: 1 }, unique: true },
-      { key: { following: 1 } },
-      { key: { follower: 1 } },
-    ]);
-    await client.close();
-  } catch (err: any) {
-    if (err.code !== 103) console.error("Follow schema:", err);
-  }
-})();
-
-// -------------------------------------------------------------------
-// 3. Add counters to _User (NO default)
-// -------------------------------------------------------------------
-(async () => {
-  try {
-    const schema = new Parse.Schema("_User");
-    // Just add fields — default 0 will be handled by Parse
-    await schema.addNumber("followingCount");
-    await schema.addNumber("followersCount");
-    await schema.save();
-    console.log("_User counters added");
-  } catch (err: any) {
-    if (err.code !== 103) console.error("User schema:", err);
-  }
-})();
-
-// -------------------------------------------------------------------
-// 4. Cloud Functions (IN index.ts)
+// 3. Cloud Functions
 // -------------------------------------------------------------------
 Parse.Cloud.define("followUser", async (req) => {
   const { myAuth0Id, targetAuth0Id } = req.params;
-  if (!myAuth0Id || !targetAuth0Id) throw "Missing IDs";
-  if (myAuth0Id === targetAuth0Id) throw "Cannot follow self";
+  if (!myAuth0Id || !targetAuth0Id || myAuth0Id === targetAuth0Id) throw "Invalid";
 
   const [me, target] = await Promise.all([
     new Parse.Query("_User").equalTo("auth0Id", myAuth0Id).first({ useMasterKey: true }),
@@ -125,7 +133,7 @@ Parse.Cloud.define("followUser", async (req) => {
   f.set("following", target);
 
   me.increment("followingCount");
-  target.increment("followersCount"); // ← CORRECT
+  target.increment("followersCount");
 
   await Parse.Object.saveAll([f, me, target], { useMasterKey: true });
   return { success: true };
@@ -133,7 +141,7 @@ Parse.Cloud.define("followUser", async (req) => {
 
 Parse.Cloud.define("unfollowUser", async (req) => {
   const { myAuth0Id, targetAuth0Id } = req.params;
-  if (!myAuth0Id || !targetAuth0Id) throw "Missing IDs";
+  if (!myAuth0Id || !targetAuth0Id) throw "Invalid";
 
   const [me, target] = await Promise.all([
     new Parse.Query("_User").equalTo("auth0Id", myAuth0Id).first({ useMasterKey: true }),
@@ -149,7 +157,7 @@ Parse.Cloud.define("unfollowUser", async (req) => {
   if (!follow) throw "Not following";
 
   me.increment("followingCount", -1);
-  target.increment("followersCount", -1); // ← CORRECT
+  target.increment("followersCount", -1);
 
   await Parse.Object.saveAll([me, target], { useMasterKey: true });
   await follow.destroy({ useMasterKey: true });
@@ -157,7 +165,7 @@ Parse.Cloud.define("unfollowUser", async (req) => {
 });
 
 // -------------------------------------------------------------------
-// 5. Socket.IO
+// 4. Socket.IO (unchanged)
 // -------------------------------------------------------------------
 const io = new Server(server, { cors: { origin: "*" } });
 const onlineUsers = new Map<string, string>();
@@ -206,13 +214,13 @@ io.on("connection", (socket: Socket) => {
 });
 
 // -------------------------------------------------------------------
-// 6. Start Server
+// 5. Start Server
 // -------------------------------------------------------------------
 (async () => {
   await parseServer.start();
   app.use("/parse", parseServer.app);
   const PORT = process.env.PORT || 1337;
   server.listen(PORT, () => {
-    console.log(`Server: http://localhost:${PORT}/parse`);
+    console.log(`Server running on http://localhost:${PORT}/parse`);
   });
 })();
