@@ -24,7 +24,8 @@ const parseServer = new ParseServer({
 });
 
 // -------------------------------------------------------------------
-// 1. Ensure UserProfile class + CLP + Indexes (UPDATED: Add location + isOnline)
+// 1. Ensure UserProfile class + CLP + Indexes
+// -------------------------------------------------------------------
 (async () => {
   try {
     const schema = new Parse.Schema("UserProfile");
@@ -46,8 +47,6 @@ const parseServer = new ParseServer({
       .addString("bio")
       .addString("profilePicUrl")
       .addString("height")
-      .addGeoPoint("location")  // NEW: For nearby queries
-      .addBoolean("isOnline", { defaultValue: false })  // NEW: For filtering online users
       .addNumber("followersCount", { defaultValue: 0 })
       .addNumber("followingCount", { defaultValue: 0 });
 
@@ -62,8 +61,6 @@ const parseServer = new ParseServer({
 
       await collection.createIndexes([
         { key: { auth0Id: 1 }, unique: true, background: true },
-        { key: { location: "2dsphere" }, background: true },  // NEW: Geo index for $nearSphere
-        { key: { isOnline: 1 }, background: true },  // NEW: For online filtering
       ]);
       console.log("UserProfile indexes created");
     } catch (err: any) {
