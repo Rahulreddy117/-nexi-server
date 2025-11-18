@@ -291,6 +291,37 @@ io.on("connection", (socket: Socket) => {
   });
 });
 
+// ————————————————————————————————————————
+// REAL-TIME NOTIFICATION BADGE — ONLY THIS BLOCK ADDED
+// ————————————————————————————————————————
+
+// Start LiveQuery server (correct way for parse-server v5+)
+(ParseServer as any).createLiveQueryServer(server, {
+  appId: config.appId,
+  masterKey: config.masterKey,
+  serverURL: config.serverURL,
+});
+
+// Subscribe to new follow notifications
+const query = new Parse.Query("FollowNotification");
+let subscription: any;
+
+// Wait for Parse Server to be fully ready before subscribing
+parseServer.start().then(() => {
+  subscription = query.subscribe();
+  
+  subscription.on("create", (object: Parse.Object) => {
+    const followedId = object.get("followedId") as string;
+    if (!followedId) return;
+
+    const socketId = onlineUsers.get(followedId);
+    if (socketId) {
+      io.to(socketId).emit("newFollowNotification");
+      console.log(`[Badge +1] → ${followedId}`);
+    }
+  });
+});
+
 // -------------------------------------------------------------------
 // 6. Start server
 // -------------------------------------------------------------------
@@ -304,7 +335,7 @@ io.on("connection", (socket: Socket) => {
     const PORT = process.env.PORT || 1337;
     server.listen(PORT, () => {
       console.log(`Server: http://localhost:${PORT}/parse`);
-      console.log(`Socket.IO: ws://localhost:${PORT}`);
+      console.log(`Socket.IO + LiveQuery ready`);
     });
   } catch (error) {
     console.error("Server failed:", error);
