@@ -243,42 +243,50 @@ io.on("connection", (socket: Socket) => {
   });
 
   socket.on("sendMessage", async (data: { senderId: string; receiverId: string; text: string }) => {
-    try {
-      const receiverQuery = new Parse.Query("UserProfile");
-      receiverQuery.equalTo("auth0Id", data.receiverId);
-      const receiver = await receiverQuery.first({ useMasterKey: true });
+  try {
+    const receiverQuery = new Parse.Query("UserProfile");
+    receiverQuery.equalTo("auth0Id", data.receiverId);
+    const receiver = await receiverQuery.first({ useMasterKey: true });
 
-      if (!receiver) {
-        socket.emit("sendError", { error: "User not found" });
-        return;
-      }
-
-      const Message = Parse.Object.extend("Message");
-      const message = new Message();
-      message.set("senderId", data.senderId);
-      message.set("receiverId", receiver.get("auth0Id"));
-      message.set("text", data.text);
-
-      const saved = await message.save(null, { useMasterKey: true });
-
-      const payload = {
-        objectId: saved.id,
-        text: data.text,
-        senderId: data.senderId,
-        receiverId: receiver.get("auth0Id"),
-        createdAt: saved.get("createdAt")!.toISOString(),
-      };
-
-      const receiverSocketId = onlineUsers.get(receiver.get("auth0Id"));
-      if (receiverSocketId) {
-        io.to(receiverSocketId).emit("newMessage", payload);
-      }
-      socket.emit("messageSent", payload);
-    } catch (err: any) {
-      console.error("sendMessage error:", err);
-      socket.emit("sendError", { error: err.message || "Failed" });
+    if (!receiver) {
+      socket.emit("sendError", { error: "User not found" });
+      return;
     }
-  });
+
+    const Message = Parse.Object.extend("Message");
+    const message = new Message();
+    message.set("senderId", data.senderId);
+    message.set("receiverId", receiver.get("auth0Id"));
+    message.set("text", data.text);
+
+    const saved = await message.save(null, { useMasterKey: true });
+
+    const payload = {
+      objectId: saved.id,
+      text: data.text,
+      senderId: data.senderId,
+      receiverId: receiver.get("auth0Id"),
+      createdAt: saved.get("createdAt")!.toISOString(),
+    };
+
+    // FIXED: Emit to BOTH receiver AND sender (if online)
+    const receiverSocketId = onlineUsers.get(receiver.get("auth0Id"));
+    const senderSocketId = onlineUsers.get(data.senderId);
+
+    if (receiverSocketId) {
+      io.to(receiverSocketId).emit("newMessage", payload);
+    }
+    if (senderSocketId && senderSocketId !== socket.id) {
+      io.to(senderSocketId).emit("newMessage", payload);
+    }
+
+    // Keep this for confirmation to the exact socket that sent
+    socket.emit("messageSent", payload);
+  } catch (err: any) {
+    console.error("sendMessage error:", err);
+    socket.emit("sendError", { error: err.message || "Failed" });
+  }
+});
 
   socket.on("disconnect", () => {
     for (const [auth0Id, sid] of onlineUsers.entries()) {
