@@ -225,59 +225,7 @@ const parseServer = new ParseServer({
 })();
 
 // -------------------------------------------------------------------
-// NEW: 5. Ensure MessageNotification class + CLP + Indexes
-// -------------------------------------------------------------------
-(async () => {
-  try {
-    const schema = new Parse.Schema("MessageNotification");
-
-    schema.setCLP({
-      get: { requiresAuthentication: true },
-      find: { requiresAuthentication: true },
-      create: { requiresAuthentication: true },
-      update: { requiresAuthentication: true },
-      delete: { requiresAuthentication: true },
-      addField: { requiresAuthentication: true },
-    });
-
-    await schema
-      .addString("senderId")
-      .addString("receiverId")
-      .addPointer("message", "Message") // Pointer to actual message
-      .addPointer("senderProfile", "UserProfile") // For quick username/pic in notifications
-      .addBoolean("read", { defaultValue: false });
-
-    await schema.save();
-    console.log("MessageNotification class created");
-
-    const client = new MongoClient(config.databaseURI);
-    try {
-      await client.connect();
-      const db = client.db();
-      const collection = db.collection("MessageNotification");
-
-      await collection.createIndexes([
-        { key: { receiverId: 1, createdAt: -1 }, background: true },
-        { key: { read: 1 }, background: true },
-        { key: { senderId: 1, receiverId: 1 }, unique: true, background: true }, // Prevent duplicates
-      ]);
-      console.log("MessageNotification indexes created");
-    } catch (err: any) {
-      console.warn("Index warning (safe to ignore):", err.message);
-    } finally {
-      await client.close();
-    }
-  } catch (err: any) {
-    if (err.code === 103) {
-      console.log("MessageNotification class exists");
-    } else {
-      console.error("MessageNotification schema error:", err);
-    }
-  }
-})();
-
-// -------------------------------------------------------------------
-// 6. Socket.IO — Real-time chat + notifications
+// 5. Socket.IO — Real-time chat + follow notifications
 // -------------------------------------------------------------------
 const io = new Server(server, {
   cors: { origin: "*", methods: ["GET", "POST"] },
@@ -305,45 +253,20 @@ io.on("connection", (socket: Socket) => {
         return;
       }
 
-      // Save the actual message
-      // Inside socket.on("sendMessage", async (data) => { ... })
+      const Message = Parse.Object.extend("Message");
+      const message = new Message();
+      message.set("senderId", data.senderId);
+      message.set("receiverId", receiver.get("auth0Id"));
+      message.set("text", data.text);
 
-// Save the actual message
-const Message = Parse.Object.extend("Message");
-const message = new Message();
-message.set("senderId", data.senderId);
-message.set("receiverId", receiver.get("auth0Id"));
-message.set("text", data.text);
-const savedMessage = await message.save(null, { useMasterKey: true });
-
-// Create notification for receiver
-const MessageNotification = Parse.Object.extend("MessageNotification");
-const notification = new MessageNotification();
-notification.set("senderId", data.senderId);
-notification.set("receiverId", receiver.get("auth0Id"));
-notification.set("message", savedMessage);
-
-// Fixed: Correct way to set pointer
-if (data.senderId) {
-  const senderProfile = new Parse.Object("UserProfile");
-  const senderObjectId = await getProfileObjectId(data.senderId);
-  if (senderObjectId) {
-    senderProfile.id = senderObjectId;
-    notification.set("senderProfile", senderProfile);
-  }
-}
-notification.set("read", false);
-
-await notification.save(null, { useMasterKey: true });
-
-      await notification.save(null, { useMasterKey: true });
+      const saved = await message.save(null, { useMasterKey: true });
 
       const payload = {
-        objectId: savedMessage.id,
+        objectId: saved.id,
         text: data.text,
         senderId: data.senderId,
         receiverId: receiver.get("auth0Id"),
-        createdAt: savedMessage.get("createdAt")!.toISOString(),
+        createdAt: saved.get("createdAt")!.toISOString(),
       };
 
       const receiverSocketId = onlineUsers.get(receiver.get("auth0Id"));
@@ -357,14 +280,6 @@ await notification.save(null, { useMasterKey: true });
     }
   });
 
-  // NEW: Helper to get profile objectId from auth0Id (for notification)
-  async function getProfileObjectId(auth0Id: string): Promise<string | null> {
-    const query = new Parse.Query("UserProfile");
-    query.equalTo("auth0Id", auth0Id);
-    const profile = await query.first({ useMasterKey: true });
-    return profile ? profile.id : null;
-  }
-
   socket.on("disconnect", () => {
     for (const [auth0Id, sid] of onlineUsers.entries()) {
       if (sid === socket.id) {
@@ -377,7 +292,7 @@ await notification.save(null, { useMasterKey: true });
 });
 
 // -------------------------------------------------------------------
-// 7. Start server
+// 6. Start server
 // -------------------------------------------------------------------
 (async () => {
   try {
