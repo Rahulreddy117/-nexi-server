@@ -311,3 +311,46 @@ io.on("connection", (socket: Socket) => {
     process.exit(1);
   }
 })();
+
+
+// -------------------------------------------------------------------
+// 7. Ensure Post class + CLP + Indexes
+// -------------------------------------------------------------------
+(async () => {
+  try {
+    const schema = new Parse.Schema("Post");
+    schema.setCLP({
+      get: { "*": true },
+      find: { "*": true },
+      create: { requiresAuthentication: true },
+      update: { requiresAuthentication: true },
+      delete: { requiresAuthentication: true },
+      addField: { requiresAuthentication: true },
+    });
+    await schema
+      .addPointer("user", "UserProfile")
+      .addArray("imageUrls");
+    await schema.save();
+    console.log("Post class created");
+    const client = new MongoClient(config.databaseURI);
+    try {
+      await client.connect();
+      const db = client.db();
+      const collection = db.collection("Post");
+      await collection.createIndexes([
+        { key: { user: 1, createdAt: -1 }, background: true },
+      ]);
+      console.log("Post indexes created");
+    } catch (err: any) {
+      console.warn("Index warning (safe to ignore):", err.message);
+    } finally {
+      await client.close();
+    }
+  } catch (err: any) {
+    if (err.code === 103) {
+      console.log("Post class exists");
+    } else {
+      console.error("Post schema error:", err);
+    }
+  }
+})();
